@@ -37,6 +37,7 @@ func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	fmt.Println("Starting worker...")
 	// Your worker implementation here.
 	for {
 		args := ExampleArgs{}
@@ -45,14 +46,14 @@ func Worker(mapf func(string, string) []KeyValue,
 		if reply.TaskWrapper.Category == Map {
 			res := reply.TaskWrapper.Task.(*MapTask)
 			if res.Status == Waiting {
-				time.Sleep(3 * time.Second)
+				time.Sleep(1 * time.Second)
 			} else {
 				mapper(res, reply.NReduce, mapf)
 			}
 		} else if reply.TaskWrapper.Category == Reduce {
 			res := reply.TaskWrapper.Task.(*ReduceTask)
 			if res.Status == Waiting {
-				time.Sleep(3 * time.Second)
+				time.Sleep(1 * time.Second)
 			} else if res.Status == Exit {
 				return
 			} else {
@@ -60,31 +61,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 		}
 	}
-
-	// Your worker implementation here.
-	//for {
-	//	args := ExampleArgs{}
-	//	reply := TaskReply{}
-	//	call("Coordinator.AssignTask", &args, &reply)
-	//	switch reply.TaskWrapper.Category {
-	//	case Map:
-	//		res := reply.TaskWrapper.Task.(*MapTask)
-	//		if res.Status == Waiting {
-	//			time.Sleep(3 * time.Second)
-	//		} else {
-	//			mapper(res, reply.NReduce, mapf)
-	//		}
-	//	case Reduce:
-	//		res := reply.TaskWrapper.Task.(*ReduceTask)
-	//		if res.Status == Waiting {
-	//			time.Sleep(3 * time.Second)
-	//		} else if res.Status == Exit {
-	//			return
-	//		} else {
-	//			reducer(res, reducef)
-	//		}
-	//	}
-	//}
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 }

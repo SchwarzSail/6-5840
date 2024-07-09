@@ -23,6 +23,7 @@ const (
 type Task interface {
 	GetNumber() int
 	GetStatus() Status
+	SetStatus(Status)
 }
 
 type TaskWrapper struct {
@@ -106,6 +107,10 @@ func (m *MapTask) GetStatus() Status {
 	return m.Status
 }
 
+func (m *MapTask) SetStatus(status Status) {
+	m.Status = status
+}
+
 type ReduceTask struct {
 	Number       int
 	Status       Status
@@ -120,8 +125,11 @@ func (r *ReduceTask) GetStatus() Status {
 	return r.Status
 }
 
+func (r *ReduceTask) SetStatus(status Status) {
+	r.Status = status
+}
+
 type CoordinatorTask struct {
 	TaskReference Task
 	StartTime     time.Time
-	TaskStatus    Status
 }

@@ -10,8 +10,6 @@ import "os"
 import "net/rpc"
 import "net/http"
 
-var JobCount int
-
 type Coordinator struct {
 	// Your definitions here.
 	TaskQueue    TaskQueue
@@ -36,14 +34,13 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) AssignTask(args *ExampleArgs, reply *TaskReply) error {
 	c.Mu.Lock()
 	defer c.Mu.Unlock()
-	c.checkCrushing()
 	switch c.Phase {
 	case Map:
 		if c.TaskQueue.Size() > 0 {
 			reply.TaskWrapper.Task = c.TaskQueue.Dequeue().(*MapTask)
 			reply.NReduce = c.NReduced
 			reply.TaskWrapper.Category = Map
-			c.TaskMeta[reply.TaskWrapper.Task.GetNumber()].TaskStatus = Running
+			c.TaskMeta[reply.TaskWrapper.Task.GetNumber()].TaskReference.SetStatus(Running)
 			c.TaskMeta[reply.TaskWrapper.Task.GetNumber()].StartTime = time.Now()
 		} else if c.TaskQueue.Size() == 0 {
 			reply.TaskWrapper.Task = &MapTask{Status: Waiting}
@@ -53,7 +50,7 @@ func (c *Coordinator) AssignTask(args *ExampleArgs, reply *TaskReply) error {
 		if c.TaskQueue.Size() > 0 {
 			reply.TaskWrapper.Task = c.TaskQueue.Dequeue().(*ReduceTask)
 			reply.TaskWrapper.Category = Reduce
-			c.TaskMeta[reply.TaskWrapper.Task.GetNumber()].TaskStatus = Running
+			c.TaskMeta[reply.TaskWrapper.Task.GetNumber()].TaskReference.SetStatus(Running)
 			c.TaskMeta[reply.TaskWrapper.Task.GetNumber()].StartTime = time.Now()
 		} else if c.TaskQueue.Size() == 0 {
 			reply.TaskWrapper.Task = &ReduceTask{Status: Waiting}
@@ -69,10 +66,10 @@ func (c *Coordinator) AssignTask(args *ExampleArgs, reply *TaskReply) error {
 func (c *Coordinator) CompleteTask(args *CompleteTaskArgs, reply *ExampleReply) error {
 	c.Mu.Lock()
 	defer c.Mu.Unlock()
-	if args.TaskCategory != c.Phase || c.TaskMeta[args.TaskID].TaskStatus == Completed {
+	if args.TaskCategory != c.Phase {
 		return nil
 	}
-	c.TaskMeta[args.TaskID].TaskStatus = Completed
+	c.TaskMeta[args.TaskID].TaskReference.SetStatus(Completed)
 	go c.processTaskResult(args)
 	return nil
 }
@@ -125,7 +122,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	c.createMapTask()
 	c.server()
-	//go c.checkCrushing()
+	go c.checkCrushing()
 	return &c
 }
 
@@ -133,13 +130,12 @@ func (c *Coordinator) createMapTask() {
 	for idx, file := range c.Files {
 		task := &MapTask{
 			Number: idx,
-			Status: Map,
+			Status: Ready,
 			Input:  file,
 		}
 		c.TaskQueue.Enqueue(task)
 		c.TaskMeta[idx] = &CoordinatorTask{
 			TaskReference: task,
-			TaskStatus:    Ready,
 		}
 	}
 }
@@ -151,13 +147,12 @@ func (c *Coordinator) createReduceTask() {
 	for idx, file := range c.Intermediate {
 		task := &ReduceTask{
 			Number:       idx,
-			Status:       Reduce,
+			Status:       Ready,
 			Intermediate: file,
 		}
 		c.TaskQueue.Enqueue(task)
 		c.TaskMeta[idx] = &CoordinatorTask{
 			TaskReference: task,
-			TaskStatus:    Ready,
 		}
 	}
 }
@@ -171,26 +166,25 @@ func (c *Coordinator) processTaskResult(args *CompleteTaskArgs) {
 		for idx, filePath := range args.Intermediate {
 			c.Intermediate[idx] = append(c.Intermediate[idx], filePath)
 		}
-		log.Printf("map task done: %d", JobCount)
-		JobCount++
+		log.Printf("map task done: %d", args.TaskID)
 		if c.allTaskDone() {
 			//进入reduce阶段
-			JobCount = 0
 			c.createReduceTask()
 			c.Phase = Reduce
 		}
 	case Reduce:
-		log.Printf("reduce task done: %d", JobCount)
-		JobCount++
+		log.Printf("reduce task done: %d", args.TaskID)
 		if c.allTaskDone() {
 			c.Phase = Exit
 		}
+	default:
+		panic("invalid task category")
 	}
 }
 
 func (c *Coordinator) allTaskDone() bool {
 	for _, task := range c.TaskMeta {
-		if task.TaskStatus != Completed {
+		if task.TaskReference.GetStatus() != Completed {
 			return false
 		}
 	}
@@ -198,10 +192,19 @@ func (c *Coordinator) allTaskDone() bool {
 }
 
 func (c *Coordinator) checkCrushing() {
-	for _, task := range c.TaskMeta {
-		if task.TaskStatus == Running && time.Since(task.StartTime) > 10*time.Second {
-			task.TaskStatus = Ready
-			c.TaskQueue.Enqueue(task.TaskReference)
+	for {
+		if c.Phase == Exit {
+			return
 		}
+		c.Mu.Lock()
+		for _, task := range c.TaskMeta {
+			if task.TaskReference.GetStatus() == Running && time.Since(task.StartTime) > 10*time.Second {
+				temp := task.TaskReference
+				log.Printf("catch the timeout Task: %d", temp.GetNumber())
+				temp.SetStatus(Ready)
+				c.TaskQueue.Enqueue(temp)
+			}
+		}
+		c.Mu.Unlock()
 	}
 }
