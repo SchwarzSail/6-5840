@@ -110,7 +110,7 @@ func max(a int, b int) int {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		TaskQueue:    TaskQueue{Queue: make([]Task, 0)},
+		TaskQueue:    TaskQueue{Queue: make([]Task, 0, len(files))},
 		TaskMeta:     make(map[int]*CoordinatorTask),
 		Phase:        Map,
 		Intermediate: make([][]string, nReduce),
@@ -142,7 +142,7 @@ func (c *Coordinator) createMapTask() {
 
 func (c *Coordinator) createReduceTask() {
 	//清空一下TaskMeta
-	c.TaskQueue = TaskQueue{Queue: make([]Task, 0)}
+	c.TaskQueue = TaskQueue{Queue: make([]Task, 0, c.NReduced)}
 	c.TaskMeta = make(map[int]*CoordinatorTask)
 	for idx, file := range c.Intermediate {
 		task := &ReduceTask{
@@ -193,6 +193,7 @@ func (c *Coordinator) allTaskDone() bool {
 
 func (c *Coordinator) checkCrushing() {
 	for {
+		time.Sleep(3 * time.Second)
 		if c.Phase == Exit {
 			return
 		}
