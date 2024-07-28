@@ -74,7 +74,6 @@ func (rf *Raft) logLength() int {
 }
 
 func (rf *Raft) isLogUpToDate(lastLogIndex int, lastLogTerm int) bool {
-
 	return lastLogTerm > rf.lastLogTerm() || (lastLogTerm == rf.lastLogTerm() && lastLogIndex >= rf.lastIncludedIndex)
 }
 
@@ -151,7 +150,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//Any elements following the entries sent by the leader MUST be kept.
 	//This is because we could be receiving an outdated AppendEntries RPC from the leader,
 	//and truncating the log would mean “taking back” entries that we may have already told the leader that we have in our log.
-
 	for i, entry := range args.Entries {
 		index := args.PrevLogIndex + 1 + i //日志的完整数组的索引
 		if index < rf.lastLogIndex()+1 {   //follower可能包含了新的日志
@@ -161,6 +159,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		} else if index == rf.lastLogIndex()+1 { //刚好是下一个
 			//4. Append any new entries not already in the log
+			DPrintf("Server %d append the log whose index is %d, and term is %d", rf.me, index, entry.Term)
 			rf.log = append(rf.log, entry)
 		}
 	}
@@ -209,6 +208,31 @@ func (rf *Raft) handleAppendEntries(peer int, args AppendEntriesArgs) {
 			rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
 			rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
 			rf.commitLogs()
+		} else {
+			if reply.XTerm == -1 {
+				//  Case 3: follower's log is too short:
+				//    nextIndex = XLen
+				rf.nextIndex[peer] = reply.XLen
+				return
+			}
+			//Upon receiving a conflict response, the leader should first search its log for conflictTerm.
+			//If it finds an entry in its log with that term,
+			//it should set nextIndex to be the one beyond the index of the last entry in that term in its log.
+			lastIndexOfXTerm := -1
+			for i := len(rf.log) - 1; i > rf.commitIndex; i-- {
+				if rf.log[i].Term == reply.XTerm {
+					lastIndexOfXTerm = rf.realIndex(i)
+					break
+				}
+			}
+			//If it does not find an entry with that term, it should set nextIndex = conflictIndex.
+			//  Case 1: leader doesn't have XTerm:
+			//    nextIndex = XIndex
+			if lastIndexOfXTerm == -1 {
+				rf.nextIndex[peer] = reply.XIndex
+			} else {
+				rf.nextIndex[peer] = lastIndexOfXTerm + 1
+			}
 		}
 	}
 }

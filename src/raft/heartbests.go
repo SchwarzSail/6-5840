@@ -35,11 +35,11 @@ func (rf *Raft) sendHeartBeats() {
 				//如果该index没有存到snapshot中，且包含在leader结点的日志中
 				if args.PrevLogIndex > rf.lastIncludedIndex && args.PrevLogIndex <= rf.lastLogIndex() {
 					args.PrevLogTerm = rf.log[rf.logIndex(args.PrevLogIndex)].Term
-				} else if args.PrevLogIndex == rf.lastLogIndex() {
+				} else if args.PrevLogIndex == rf.lastIncludedIndex {
 					//此时说明该index保存在snapshot中
 					args.PrevLogTerm = rf.log[0].Term
 				}
-				args.Entries = append(make([]LogEntry, 0), rf.log[rf.logIndex(args.PrevLogIndex):]...)
+				args.Entries = append(make([]LogEntry, 0), rf.log[rf.realIndex(rf.nextIndex[i]):]...)
 				go rf.handleAppendEntries(i, args)
 			}
 		}

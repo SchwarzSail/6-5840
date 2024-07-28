@@ -122,6 +122,8 @@ type Raft struct {
 	//what “real” index the first entry in Raft’s persisted log corresponds to.
 	//his can then be compared to the loaded snapshot’s lastIncludedIndex to determine what elements at the head of the log to discard.
 	lastIncludedIndex int //snapshot的边界
+	lastIncludedTerm  int
+	snapshot          []byte
 }
 
 func (rf *Raft) stateChanged(state State) {
@@ -164,58 +166,6 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
-func (rf *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
-
-	//When snapshotting application state, you need to make sure that
-	//the application state corresponds to the state following some known index in the Raft log.
-	//This means that the application either needs to communicate to Raft what index the snapshot corresponds to,
-	//or that Raft needs to delay applying additional log entries until the snapshot has been completed.
-	//个人感觉后半句是重点，
-}
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -245,8 +195,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 			Command: command,
 		})
-		rf.nextIndex[rf.me] = index + 1
-		rf.matchIndex[rf.me] = index
+		rf.nextIndex[rf.me] = index
+		rf.matchIndex[rf.me] = index - 1
+		DPrintf("Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
 		rf.persist()
 	}
 	return index, term, isLeader
@@ -324,9 +275,10 @@ func (rf *Raft) apply() {
 
 		for _, msg := range msgs {
 			rf.applyCh <- msg
+			DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.realIndex(msg.CommandIndex)].Term)
 		}
 		rf.mu.Lock()
-		rf.lastApplied = rf.commitIndex
+		rf.lastApplied = max(rf.lastApplied, rf.commitIndex)
 		rf.mu.Unlock()
 
 	}
@@ -366,5 +318,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	go rf.apply()
 	return rf
 }
