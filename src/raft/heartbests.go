@@ -25,7 +25,6 @@ func (rf *Raft) sendHeartBeats() {
 		for i := range rf.peers {
 			if i != rf.me {
 				//AppendEntries
-
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
@@ -39,11 +38,11 @@ func (rf *Raft) sendHeartBeats() {
 					//此时说明该index保存在snapshot中
 					args.PrevLogTerm = rf.log[0].Term
 				}
-				args.Entries = append(make([]LogEntry, 0), rf.log[rf.realIndex(rf.nextIndex[i]):]...)
+				args.Entries = rf.log[rf.realIndex(rf.nextIndex[i]):]
 				go rf.handleAppendEntries(i, args)
 			}
 		}
 		rf.mu.Unlock()
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }

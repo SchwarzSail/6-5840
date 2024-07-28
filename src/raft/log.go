@@ -74,7 +74,7 @@ func (rf *Raft) logLength() int {
 }
 
 func (rf *Raft) isLogUpToDate(lastLogIndex int, lastLogTerm int) bool {
-	return lastLogTerm > rf.lastLogTerm() || (lastLogTerm == rf.lastLogTerm() && lastLogIndex >= rf.lastIncludedIndex)
+	return lastLogTerm > rf.lastLogTerm() || (lastLogTerm == rf.lastLogTerm() && lastLogIndex >= rf.lastLogIndex())
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -112,8 +112,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.lastIncludedIndex > args.PrevLogIndex {
 		return
 	}
-	defer rf.resetElectionTimer()
-	defer rf.resetHeartBeatTimer()
+	rf.resetElectionTimer()
+	rf.resetHeartBeatTimer()
+	defer rf.persist()
 	//follower落后太多了
 	//If a follower does not have prevLogIndex in its log, it should return with conflictIndex = len(log) and conflictTerm = None.
 	if args.PrevLogIndex > rf.lastLogIndex() {

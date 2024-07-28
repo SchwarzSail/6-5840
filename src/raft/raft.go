@@ -275,7 +275,7 @@ func (rf *Raft) apply() {
 
 		for _, msg := range msgs {
 			rf.applyCh <- msg
-			DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.realIndex(msg.CommandIndex)].Term)
+			//DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.realIndex(msg.CommandIndex)].Term)
 		}
 		rf.mu.Lock()
 		rf.lastApplied = max(rf.lastApplied, rf.commitIndex)

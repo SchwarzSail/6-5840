@@ -83,5 +83,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	//the application state corresponds to the state following some known index in the Raft log.
 	//This means that the application either needs to communicate to Raft what index the snapshot corresponds to,
 	//or that Raft needs to delay applying additional log entries until the snapshot has been completed.
-	//个人感觉后半句是重点，
+	//在这里的意思是在应用完快照后才能应用日志
+
 }
