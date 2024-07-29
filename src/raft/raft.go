@@ -122,8 +122,8 @@ type Raft struct {
 	//what “real” index the first entry in Raft’s persisted log corresponds to.
 	//his can then be compared to the loaded snapshot’s lastIncludedIndex to determine what elements at the head of the log to discard.
 	lastIncludedIndex int //snapshot的边界
-	lastIncludedTerm  int
 	snapshot          []byte
+	applyingSnapshot  bool //用于应用层标识是否应用snapshot
 }
 
 func (rf *Raft) stateChanged(state State) {
@@ -224,7 +224,7 @@ func (rf *Raft) killed() bool {
 
 // for leader election
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 		rf.mu.Lock()
 		// Your code here (3A)
 		// Check if a leader election should be started.
@@ -241,7 +241,7 @@ func (rf *Raft) ticker() {
 			}
 		case Candidate: //2. candidate的选举时间超时
 			if time.Since(rf.lastElectionTime) > rf.electionTimeout() {
-				DPrintf("Server %d find the electon is timeout and previous term is %d", rf.me, rf.currentTerm)
+				DPrintf("Server %d find the election is timeout and previous term is %d", rf.me, rf.currentTerm)
 				rf.stateChanged(Candidate)
 				rf.startElection()
 			}
@@ -256,12 +256,25 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) apply() {
-	for rf.killed() == false {
+	for !rf.killed() {
 		rf.mu.Lock()
 		for rf.commitIndex <= rf.lastApplied {
 			rf.cond.Wait()
 		}
-		//If commitIndex > lastApplied: increment lastApplied, apply
+		if rf.applyingSnapshot {
+			rf.applyingSnapshot = false
+			msg := ApplyMsg{
+				SnapshotValid: true,
+				Snapshot:      rf.snapshot,
+				SnapshotTerm:  rf.log[rf.logIndex(rf.lastIncludedIndex)].Term,
+				SnapshotIndex: rf.lastIncludedIndex,
+			}
+			rf.mu.Unlock()
+			rf.applyCh <- msg
+			DPrintf("Server %d install the snapshot---------------",rf.me)
+			rf.mu.Lock()
+		} else if rf.commitIndex > rf.lastApplied{
+			//If commitIndex > lastApplied: increment lastApplied, apply
 		//log[lastApplied] to state machine (§5.3)
 		msgs := make([]ApplyMsg, 0)
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
@@ -279,8 +292,8 @@ func (rf *Raft) apply() {
 		}
 		rf.mu.Lock()
 		rf.lastApplied = max(rf.lastApplied, rf.commitIndex)
+		}
 		rf.mu.Unlock()
-
 	}
 }
 
@@ -314,7 +327,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartBestsTime = time.Now()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	rf.snapshot = persister.ReadSnapshot()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 

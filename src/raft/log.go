@@ -47,12 +47,6 @@ func (rf *Raft) lastLogTerm() int {
 	return rf.log[len(rf.log)-1].Term
 }
 
-func (rf *Raft) firstLogIndex() int {
-	if len(rf.log) == 1 {
-		return rf.lastIncludedIndex
-	}
-	return rf.lastIncludedIndex + 1
-}
 
 //有两个概念解释清楚，因为设计到snapshot
 //真实索引：指日志数组的索引，从0开始
@@ -160,7 +154,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		} else if index == rf.lastLogIndex()+1 { //刚好是下一个
 			//4. Append any new entries not already in the log
-			DPrintf("Server %d append the log whose index is %d, and term is %d", rf.me, index, entry.Term)
+			//DPrintf("Server %d append the log whose index is %d, and term is %d", rf.me, index, entry.Term)
 			rf.log = append(rf.log, entry)
 		}
 	}
@@ -175,7 +169,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) handleAppendEntries(peer int, args AppendEntriesArgs) {
 	reply := AppendEntriesReply{}
-	//DPrintf("Leader %d send a heartbest to Server %d\n", rf.me, peer)
+	//DPrintf("Leader %d send a heartbeat to Server %d\n", rf.me, peer)
 	ok := rf.sendAppendEntries(peer, &args, &reply)
 	if ok {
 		rf.mu.Lock()

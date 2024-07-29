@@ -133,7 +133,7 @@ func (rf *Raft) startElection() {
 					defer rf.mu.Unlock()
 					//先确保自己的状态不能有改变，不然选举没有意义
 					if rf.state != Candidate || rf.currentTerm != args.Term {
-						//DPrintf("The requet of vote is invalid.")
+						//DPrintf("The request of vote is invalid.")
 						return
 					}
 					//If RPC request or response contains term T > currentTerm:
