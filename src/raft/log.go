@@ -148,11 +148,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for i, entry := range args.Entries {
 		index := args.PrevLogIndex + 1 + i //日志的完整数组的索引
 		if index < rf.lastLogIndex()+1 {   //follower可能包含了新的日志
-			if rf.log[rf.logIndex(index)].Term != entry.Term { //说明这个新日志是follower没有的
+			if rf.log[rf.logIndex(index)].Term != entry.Term { //说明这个日志在follower中是过期的
 				rf.log = rf.log[:rf.logIndex(index)] // 删除当前以及后续所有log
 				rf.log = append(rf.log, entry)       // 把新log加入进来
 			}
-		} else if index == rf.lastLogIndex()+1 { //刚好是下一个
+		} else if index == rf.lastLogIndex()+1 { 
 			//4. Append any new entries not already in the log
 			//DPrintf("Server %d append the log whose index is %d, and term is %d", rf.me, index, entry.Term)
 			rf.log = append(rf.log, entry)
@@ -236,7 +236,11 @@ func (rf *Raft) commitLogs() {
 	//If there exists an N such that N > commitIndex, a majority
 	//of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	//set commitIndex = N (§5.3, §5.4).
-	for N := rf.lastLogIndex(); N > rf.commitIndex && rf.log[rf.logIndex(N)].Term == rf.currentTerm; N-- {
+	commitIndex := rf.commitIndex
+	for N := commitIndex + 1; N <= rf.lastLogIndex() ; N++ {
+		if rf.log[rf.logIndex(N)].Term != rf.currentTerm {
+			continue
+		}
 		count := 1
 		for peer := range rf.peers {
 			if peer != rf.me && rf.matchIndex[peer] >= N {
@@ -245,7 +249,10 @@ func (rf *Raft) commitLogs() {
 		}
 		if count > len(rf.peers)/2 {
 			rf.commitIndex = N
-			rf.cond.Broadcast()
 		}
+	}
+	if rf.commitIndex != commitIndex {
+		//DPrintf("------------Leader %d find that is time to commit logs----------", rf.me)
+		rf.cond.Broadcast()
 	}
 }

@@ -80,8 +80,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var votedFor int
 	var log []LogEntry
 	var lastIncludedIndex int
-	var lastIncludedTerm int
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil {
 		DPrintf("Server %d readPersist failed for term %d\n", rf.me, rf.currentTerm)
 	}
 	rf.currentTerm = currentTerm
