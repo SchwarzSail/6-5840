@@ -190,13 +190,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		isLeader = false
 	} else {
 		term = rf.currentTerm
-		index = rf.lastLogIndex() + 1
 		rf.log = append(rf.log, LogEntry{
 			Term:    term,
 			Command: command,
 		})
-		rf.nextIndex[rf.me] = index
-		rf.matchIndex[rf.me] = index - 1
+		index = rf.lastLogIndex()
+		//rf.nextIndex[rf.me] = index + 1
+		//rf.matchIndex[rf.me] = index 
 		DPrintf("Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
 		rf.persist()
 	}
@@ -219,6 +219,9 @@ func (rf *Raft) Kill() {
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
+	if z == 1 {
+		DPrintf("Server %d is broken out ------------------------------------------",rf.me)
+	}
 	return z == 1
 }
 
@@ -271,8 +274,11 @@ func (rf *Raft) apply() {
 			}
 			rf.mu.Unlock()
 			rf.applyCh <- msg
-			DPrintf("Server %d install the snapshot---------------",rf.me)
+			DPrintf("----------Server %d install the snapshot and the snapshotIndex is %d ----------------",rf.me, msg.SnapshotIndex)
 			rf.mu.Lock()
+			rf.lastIncludedIndex = msg.SnapshotIndex
+			rf.lastApplied = max(rf.lastApplied, msg.SnapshotIndex)
+			
 		} else if rf.commitIndex > rf.lastApplied{
 			//If commitIndex > lastApplied: increment lastApplied, apply
 		//log[lastApplied] to state machine (§5.3)
@@ -288,12 +294,14 @@ func (rf *Raft) apply() {
 
 		for _, msg := range msgs {
 			rf.applyCh <- msg
+			rf.lastApplied = msg.CommandIndex
 			DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
 		}
-		rf.mu.Lock()
-		rf.lastApplied = max(rf.lastApplied, rf.commitIndex)
-		}
-		rf.mu.Unlock()
+		// rf.mu.Lock()
+		// rf.lastApplied = rf.commitIndex
+		// }
+		// rf.mu.Unlock()
+	}
 	}
 }
 

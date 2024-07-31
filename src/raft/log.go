@@ -252,7 +252,7 @@ func (rf *Raft) commitLogs() {
 		}
 	}
 	if rf.commitIndex != commitIndex {
-		//DPrintf("------------Leader %d find that is time to commit logs----------", rf.me)
+		DPrintf("------------Leader %d find that is time to commit logs----------, and the commitIndex is %d", rf.me, rf.commitIndex)
 		rf.cond.Broadcast()
 	}
 }

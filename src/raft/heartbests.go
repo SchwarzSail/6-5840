@@ -49,7 +49,7 @@ func (rf *Raft) sendHeartBeats() {
 						//此时说明该index保存在snapshot中
 						args.PrevLogTerm = rf.log[0].Term
 					}
-					args.Entries = rf.log[rf.logIndex(rf.nextIndex[i]):]
+					args.Entries = append(make([]LogEntry,0), rf.log[rf.logIndex(rf.nextIndex[i]):]...)
 					go rf.handleAppendEntries(i, args)
 				}
 			}
