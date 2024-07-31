@@ -296,7 +296,9 @@ func (rf *Raft) apply() {
 
 			for _, msg := range msgs {
 				rf.applyCh <- msg
+				rf.mu.Lock()
 				rf.lastApplied = msg.CommandIndex
+				rf.mu.Unlock()
 				DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
 			}
 			// rf.mu.Lock()
