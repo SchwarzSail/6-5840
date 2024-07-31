@@ -196,7 +196,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		})
 		index = rf.lastLogIndex()
 		//rf.nextIndex[rf.me] = index + 1
-		//rf.matchIndex[rf.me] = index 
+		//rf.matchIndex[rf.me] = index
 		DPrintf("Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
 		rf.persist()
 	}
@@ -220,7 +220,7 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	if z == 1 {
-		DPrintf("Server %d is broken out ------------------------------------------",rf.me)
+		DPrintf("Server %d is broken out ------------------------------------------", rf.me)
 	}
 	return z == 1
 }
@@ -274,34 +274,35 @@ func (rf *Raft) apply() {
 			}
 			rf.mu.Unlock()
 			rf.applyCh <- msg
-			DPrintf("----------Server %d install the snapshot and the snapshotIndex is %d ----------------",rf.me, msg.SnapshotIndex)
+			DPrintf("----------Server %d install the snapshot and the snapshotIndex is %d ----------------", rf.me, msg.SnapshotIndex)
 			rf.mu.Lock()
 			rf.lastIncludedIndex = msg.SnapshotIndex
 			rf.lastApplied = max(rf.lastApplied, msg.SnapshotIndex)
-			
-		} else if rf.commitIndex > rf.lastApplied{
+			rf.mu.Unlock()
+			continue
+		}
+		if rf.commitIndex > rf.lastApplied {
 			//If commitIndex > lastApplied: increment lastApplied, apply
-		//log[lastApplied] to state machine (§5.3)
-		msgs := make([]ApplyMsg, 0)
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			msgs = append(msgs, ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[rf.logIndex(i)].Command,
-				CommandIndex: i,
-			})
-		}
-		rf.mu.Unlock()
+			//log[lastApplied] to state machine (§5.3)
+			msgs := make([]ApplyMsg, 0)
+			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+				msgs = append(msgs, ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[rf.logIndex(i)].Command,
+					CommandIndex: i,
+				})
+			}
+			rf.mu.Unlock()
 
-		for _, msg := range msgs {
-			rf.applyCh <- msg
-			rf.lastApplied = msg.CommandIndex
-			DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
+			for _, msg := range msgs {
+				rf.applyCh <- msg
+				rf.lastApplied = msg.CommandIndex
+				DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
+			}
+			// rf.mu.Lock()
+			// rf.lastApplied = rf.commitIndex
+			// }
 		}
-		// rf.mu.Lock()
-		// rf.lastApplied = rf.commitIndex
-		// }
-		// rf.mu.Unlock()
-	}
 	}
 }
 
