@@ -197,7 +197,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = rf.lastLogIndex()
 		//rf.nextIndex[rf.me] = index + 1
 		//rf.matchIndex[rf.me] = index
-		DPrintf("Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
+		Debug(dLeader, "Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
 		rf.persist()
 	}
 	return index, term, isLeader
@@ -220,7 +220,7 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	if z == 1 {
-		DPrintf("Server %d is broken out ------------------------------------------", rf.me)
+		Debug(dDrop, "Server %d is broken out", rf.me)
 	}
 	return z == 1
 }
@@ -237,16 +237,16 @@ func (rf *Raft) ticker() {
 			//If election timeout elapses without receiving AppendEntries
 			//RPC from current leader or granting vote to candidate:
 			//convert to candidate
-			if time.Since(rf.lastHeartBestsTime) > rf.heartBeatTimeOut() {
-				DPrintf("Server %d find the heartbeats timeout", rf.me)
+			if time.Since(rf.lastElectionTime) > rf.electionTimeout() && (rf.votedFor == -1 || time.Since(rf.lastHeartBestsTime) > rf.heartBeatTimeOut())  {
+				Debug(dClient, "Server %d find the heartbeats timeout", rf.me)
 				rf.stateChanged(Candidate)
-				rf.startElection()
+				go rf.startElection(rf.currentTerm)
 			}
 		case Candidate: //2. candidate的选举时间超时
 			if time.Since(rf.lastElectionTime) > rf.electionTimeout() {
-				DPrintf("Server %d find the election is timeout and previous term is %d", rf.me, rf.currentTerm)
+				Debug(dClient,"Server %d find the election is timeout and previous term is %d", rf.me, rf.currentTerm)
 				rf.stateChanged(Candidate)
-				rf.startElection()
+				go rf.startElection(rf.currentTerm)
 			}
 		}
 		rf.mu.Unlock()
@@ -274,7 +274,7 @@ func (rf *Raft) apply() {
 			}
 			rf.mu.Unlock()
 			rf.applyCh <- msg
-			DPrintf("----------Server %d install the snapshot and the snapshotIndex is %d ----------------", rf.me, msg.SnapshotIndex)
+			Debug(dSnap, "Server %d install the snapshot and the snapshotIndex is %d",rf.me, msg.SnapshotIndex)
 			rf.mu.Lock()
 			rf.lastIncludedIndex = msg.SnapshotIndex
 			rf.lastApplied = max(rf.lastApplied, msg.SnapshotIndex)
@@ -298,12 +298,10 @@ func (rf *Raft) apply() {
 				rf.applyCh <- msg
 				rf.mu.Lock()
 				rf.lastApplied = msg.CommandIndex
+				Debug(dCommit,"Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
 				rf.mu.Unlock()
-				DPrintf("Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
+				
 			}
-			// rf.mu.Lock()
-			// rf.lastApplied = rf.commitIndex
-			// }
 		}
 	}
 }

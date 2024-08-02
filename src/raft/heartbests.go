@@ -6,7 +6,7 @@ import (
 )
 
 func (rf *Raft) heartBeatTimeOut() time.Duration {
-	return time.Duration(500+(rand.Int63()%300)) * time.Millisecond
+	return time.Duration(100 + (rand.Int63()%200)) * time.Millisecond
 }
 
 func (rf *Raft) resetHeartBeatTimer() {

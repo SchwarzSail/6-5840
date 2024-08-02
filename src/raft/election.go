@@ -12,7 +12,7 @@ import (
 
 // ResetElectionTimeout 随机化选举超时时间
 func (rf *Raft) electionTimeout() time.Duration {
-	return time.Duration(500+(rand.Int63()%500)) * time.Millisecond
+	return time.Duration(300+(rand.Int63()%1000)) * time.Millisecond
 }
 func (rf *Raft) resetElectionTimer() {
 	rf.lastElectionTime = time.Now()
@@ -55,10 +55,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-		DPrintf("The Term of Candidate %d is too old, the bigger term is %d", args.CandidateID, rf.currentTerm)
+		//DPrintf("The Term of Candidate %d is too old, the bigger term is %d", args.CandidateID, rf.currentTerm)
 		return
 	}
-	rf.resetElectionTimer()
 	defer rf.persist()
 	//If RPC request or response contains term T > currentTerm:
 	//set currentTerm = T, convert to follower (§5.1)
@@ -69,13 +68,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//2. If votedFor is null or candidateId, and candidate’s log is at
 	//least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && rf.isLogUpToDate(args.LastLogIndex, args.LastLogTerm) {
-		//DPrintf("Server %d vote to Server %d", rf.me, args.CandidateID)
+		Debug(dVote,"Server %d vote to Server %d", rf.me, args.CandidateID)
+		rf.stateChanged(Follower)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 		rf.resetElectionTimer()
 	} else {
+		Debug(dVote,"Server %d fail to vote for candidate %d",rf.me, args.CandidateID)
 		reply.VoteGranted = false
-
 	}
 
 	reply.Term = rf.currentTerm
@@ -114,7 +114,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 // 由candidate调用
-func (rf *Raft) startElection() {
+func (rf *Raft) startElection(term int) {
+	for !rf.killed() {
+		rf.mu.Lock()
+		if rf.state != Candidate  && rf.currentTerm != term{
+			rf.mu.Unlock()
+			return
+		}
+		
 	rf.resetElectionTimer()
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -122,7 +129,9 @@ func (rf *Raft) startElection() {
 		LastLogIndex: rf.lastLogIndex(),
 		LastLogTerm:  rf.lastLogTerm(),
 	}
+	//Debug(dClient, "Candidate %d has lastLogIndex which is %d and lastLogTerm which is %d",rf.me,rf.lastLogIndex(),rf.lastLogTerm())
 	vote := 1
+	rf.mu.Unlock()
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(peer int) {
@@ -139,6 +148,7 @@ func (rf *Raft) startElection() {
 					//If RPC request or response contains term T > currentTerm:
 					//set currentTerm = T, convert to follower (§5.1)
 					if reply.Term > rf.currentTerm {
+						Debug(dClient,"candidate %d find its term is too late which is %d",rf.me,rf.currentTerm)
 						rf.currentTerm = reply.Term
 						rf.stateChanged(Follower)
 						return
@@ -153,4 +163,6 @@ func (rf *Raft) startElection() {
 			}(i)
 		}
 	}
+	time.Sleep(100 * time.Millisecond)
+}
 }

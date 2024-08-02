@@ -86,7 +86,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		DPrintf("Server %d have the higher term whose term is %d than leader %d whose term is %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+		Debug(dInfo,"Server %d have the higher term whose term is %d than leader %d whose term is %d", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 		return
 	}
 
@@ -252,7 +252,7 @@ func (rf *Raft) commitLogs() {
 		}
 	}
 	if rf.commitIndex != commitIndex {
-		DPrintf("------------Leader %d find that is time to commit logs----------, and the commitIndex is %d", rf.me, rf.commitIndex)
+		Debug(dLeader,"Leader %d find that is time to commit logs whose commitIndex is %d",rf.me ,rf.commitIndex)
 		rf.cond.Broadcast()
 	}
 }

@@ -81,7 +81,8 @@ func (rf *Raft) readPersist(data []byte) {
 	var log []LogEntry
 	var lastIncludedIndex int
 	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil {
-		DPrintf("Server %d readPersist failed for term %d\n", rf.me, rf.currentTerm)
+		Debug(dPersist,"Server %d readPersist failed for term %d\n", rf.me, rf.currentTerm)
+		panic("Persist error")
 	}
 	rf.currentTerm = currentTerm
 	rf.votedFor = votedFor
@@ -90,8 +91,7 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.commitIndex = lastIncludedIndex
 	rf.lastApplied = lastIncludedIndex
 	rf.snapshot = rf.persister.ReadSnapshot()
-	DPrintf("Server %d readPersist finished\n", rf.me)
-
+	Debug(dPersist,"Server %d readPersist finished", rf.me)
 }
 
 // the service says it has created a snapshot that has
@@ -120,7 +120,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log[0].Term = lastIncludedTerm
 	rf.snapshot = snapshot
 	rf.persist()
-	DPrintf("Server %d receive a request of installing snapshot",rf.me)
+	Debug(dSnap,"Server %d receive a request of installing snapshot",rf.me)
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -161,7 +161,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.lastIncludedIndex = args.LastIncludedIndex
 			rf.snapshot = args.Data
 			rf.applyingSnapshot = true
-			DPrintf("Server %d send a install snapshot request to channel",rf.me)
+			Debug(dSnap,"Server %d send a install snapshot request to channel",rf.me)
 			rf.cond.Broadcast()
 			return
 		}
@@ -175,8 +175,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.snapshot = args.Data
 	rf.log = temp
 	rf.applyingSnapshot = true
-	DPrintf("Server %d send a install snapshot request to channel",rf.me)
-
+	Debug(dSnap,"Server %d send a install snapshot request to channel",rf.me)
 	//8. Reset state machine using snapshot contents (and load
 	//snapshot’s cluster configuration)
 	rf.cond.Broadcast()
@@ -198,7 +197,6 @@ func (rf *Raft) handleInstallSnapshot(peer int, args InstallSnapshotArgs) {
 		}
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
-			DPrintf("Leader %d find its term is too late", rf.me)
 			rf.stateChanged(Follower)
 			return
 		}
