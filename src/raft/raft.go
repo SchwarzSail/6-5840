@@ -240,6 +240,7 @@ func (rf *Raft) ticker() {
 			if time.Since(rf.lastElectionTime) > rf.electionTimeout() && (rf.votedFor == -1 || time.Since(rf.lastHeartBestsTime) > rf.heartBeatTimeOut())  {
 				Debug(dClient, "Server %d find the heartbeats timeout", rf.me)
 				rf.stateChanged(Candidate)
+				rf.resetElectionTimer()
 				go rf.startElection(rf.currentTerm)
 			}
 		case Candidate: //2. candidate的选举时间超时

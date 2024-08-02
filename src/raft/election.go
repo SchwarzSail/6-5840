@@ -55,7 +55,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-		//DPrintf("The Term of Candidate %d is too old, the bigger term is %d", args.CandidateID, rf.currentTerm)
+		DPrintf("The Term of Candidate %d is too old, the bigger term is %d", args.CandidateID, rf.currentTerm)
 		return
 	}
 	defer rf.persist()
@@ -68,13 +68,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//2. If votedFor is null or candidateId, and candidate’s log is at
 	//least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && rf.isLogUpToDate(args.LastLogIndex, args.LastLogTerm) {
-		Debug(dVote,"Server %d vote to Server %d", rf.me, args.CandidateID)
+		Debug(dVote, "Server %d vote to Server %d", rf.me, args.CandidateID)
 		rf.stateChanged(Follower)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 		rf.resetElectionTimer()
 	} else {
-		Debug(dVote,"Server %d fail to vote for candidate %d",rf.me, args.CandidateID)
+		Debug(dVote, "Server %d fail to vote for candidate %d", rf.me, args.CandidateID)
 		reply.VoteGranted = false
 	}
 
@@ -117,52 +117,51 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) startElection(term int) {
 	for !rf.killed() {
 		rf.mu.Lock()
-		if rf.state != Candidate  && rf.currentTerm != term{
+		if rf.state != Candidate || rf.currentTerm != term {
 			rf.mu.Unlock()
 			return
 		}
-		
-	rf.resetElectionTimer()
-	args := RequestVoteArgs{
-		Term:         rf.currentTerm,
-		CandidateID:  rf.me,
-		LastLogIndex: rf.lastLogIndex(),
-		LastLogTerm:  rf.lastLogTerm(),
-	}
-	//Debug(dClient, "Candidate %d has lastLogIndex which is %d and lastLogTerm which is %d",rf.me,rf.lastLogIndex(),rf.lastLogTerm())
-	vote := 1
-	rf.mu.Unlock()
-	for i := range rf.peers {
-		if i != rf.me {
-			go func(peer int) {
-				reply := RequestVoteReply{}
-				ok := rf.sendRequestVote(peer, &args, &reply)
-				if ok {
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
-					//先确保自己的状态不能有改变，不然选举没有意义
-					if rf.state != Candidate || rf.currentTerm != args.Term {
-						//DPrintf("The request of vote is invalid.")
-						return
-					}
-					//If RPC request or response contains term T > currentTerm:
-					//set currentTerm = T, convert to follower (§5.1)
-					if reply.Term > rf.currentTerm {
-						Debug(dClient,"candidate %d find its term is too late which is %d",rf.me,rf.currentTerm)
-						rf.currentTerm = reply.Term
-						rf.stateChanged(Follower)
-						return
-					}
-					if reply.VoteGranted {
-						vote++
-						if vote > len(rf.peers)/2 {
-							rf.stateChanged(Leader)
+		args := RequestVoteArgs{
+			Term:         rf.currentTerm,
+			CandidateID:  rf.me,
+			LastLogIndex: rf.lastLogIndex(),
+			LastLogTerm:  rf.lastLogTerm(),
+		}
+		//Debug(dClient, "Candidate %d has lastLogIndex which is %d and lastLogTerm which is %d",rf.me,rf.lastLogIndex(),rf.lastLogTerm())
+		vote := 1
+		rf.mu.Unlock()
+		for i := range rf.peers {
+			if i != rf.me {
+				go func(peer int) {
+					reply := RequestVoteReply{}
+					ok := rf.sendRequestVote(peer, &args, &reply)
+					if ok {
+						rf.mu.Lock()
+						defer rf.mu.Unlock()
+						//先确保自己的状态不能有改变，不然选举没有意义
+						if rf.state != Candidate || rf.currentTerm != args.Term {
+							//DPrintf("The request of vote is invalid.")
+							return
+						}
+						//If RPC request or response contains term T > currentTerm:
+						//set currentTerm = T, convert to follower (§5.1)
+						if reply.Term > rf.currentTerm {
+							Debug(dClient, "candidate %d find its term is too late which is %d", rf.me, rf.currentTerm)
+							rf.currentTerm = reply.Term
+							rf.stateChanged(Follower)
+							return
+						}
+						if reply.VoteGranted {
+							vote++
+							if vote > len(rf.peers)/2 {
+								rf.stateChanged(Leader)
+							}
 						}
 					}
-				}
-			}(i)
+				}(i)
+			}
 		}
+		ms := 50 + (rand.Int63() % 300)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond)
-}
 }
