@@ -198,6 +198,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		//rf.nextIndex[rf.me] = index + 1
 		//rf.matchIndex[rf.me] = index
 		Debug(dLeader, "Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
+		go rf.quicklySync()//发起快速同步日记请求(lab4A)
 		rf.persist()
 	}
 	return index, term, isLeader
