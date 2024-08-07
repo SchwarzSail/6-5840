@@ -39,11 +39,11 @@ type KVServer struct {
 
 	// Your definitions here.
 
-	persister *raft.Persister
+	persister    *raft.Persister
 	storage      map[string]string
 	clientTable  map[int64]int //client --> sequent
 	lastApplied  int
-	requestTable map[int]chan RequestInfo //index --> requestID,用于service应用了日志后通知对应的RPC进程
+	channelTable map[int]chan RequestInfo //index --> requestID,用于service应用了日志后通知对应的RPC进程
 	isLeader     bool
 	cond         *sync.Cond
 }
@@ -52,7 +52,9 @@ type KVServer struct {
 func (kv *KVServer) preProcessRequest(clientID int64, sequentID int, err *Err) bool {
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
+		kv.mu.Lock()
 		kv.isLeader = false
+		kv.mu.Unlock()
 		*err = ErrWrongLeader
 		return false
 	}
@@ -77,6 +79,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if ok := kv.preProcessRequest(args.ClientID, args.SequentID, &reply.Err); !ok {
 		if reply.Err == ErrDuplicateReq {
 			kv.mu.Lock()
+			reply.Err = OK
 			reply.Value = kv.storage[args.Key]
 			kv.mu.Unlock()
 		}
@@ -93,12 +96,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
+	kv.mu.Lock()
 	kv.isLeader = true
+	kv.mu.Unlock()
 	Debug(dInfo, "Get: application send the command whose index is %d, and term is %d", index, term)
 	//建立对应的channel
 	ch := kv.createChannel(index)
+	defer kv.freeMemory(index)
+
 	//Debug(dTrace, "service make the channel whose ClientID is %d , SequentID is %d, and index is %d", args.ClientID, args.SequentID, index)
-	
+
 	//等待apply()
 	select {
 	case msg := <-ch:
@@ -114,7 +121,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			Debug(dInfo, "service get the success reply of Get")
 			return
 		}
-	case <-time.After(5 * RPCTimeout):
+	case <-time.After(RPCTimeout):
 		reply.Err = ErrRPCTimeout
 		return
 	}
@@ -135,10 +142,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
+	kv.mu.Lock()
 	kv.isLeader = true
+	kv.mu.Unlock()
 	Debug(dInfo, "PutAppend: application send the command whose index is %d, and term is %d", index, term)
 	//建立对应的channel
 	ch := kv.createChannel(index)
+	defer kv.freeMemory(index)
 	//Debug(dTrace, "service make the channel whose ClientID is %d , SequentID is %d, and index is %d", args.ClientID, args.SequentID, index)
 
 	//等待apply()
@@ -149,7 +159,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			reply.Err = OK
 			return
 		}
-	case <-time.After(5 * RPCTimeout):
+	case <-time.After(RPCTimeout):
 		reply.Err = ErrRPCTimeout
 		return
 	}
@@ -212,7 +222,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.storage = make(map[string]string)
 	kv.clientTable = make(map[int64]int)
-	kv.requestTable = make(map[int]chan RequestInfo)
+	kv.channelTable = make(map[int]chan RequestInfo)
 	kv.lastApplied = 0
 	kv.cond = sync.NewCond(&kv.mu)
 	go kv.processApply()
@@ -242,7 +252,10 @@ func (kv *KVServer) processApply() {
 				kv.mu.Unlock()
 				//将数据写入channel告知RPC
 				//只有leader才能收到这个由channel发送的消息
-				if kv.isLeader {
+				kv.mu.Lock()
+				ok := kv.isLeader
+				kv.mu.Unlock()
+				if ok {
 					ch := kv.createChannel(msg.CommandIndex)
 					Debug(dTrace, "service: the channel is %v, and index is %d", ch, msg.CommandIndex)
 					ch <- RequestInfo{
@@ -263,10 +276,16 @@ func (kv *KVServer) processApply() {
 func (kv *KVServer) createChannel(index int) chan RequestInfo {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	ch, ok := kv.requestTable[index]
+	ch, ok := kv.channelTable[index]
 	if !ok {
-		kv.requestTable[index] = make(chan RequestInfo, 1)
-		ch = kv.requestTable[index]
+		kv.channelTable[index] = make(chan RequestInfo,1)
+		ch = kv.channelTable[index]
 	}
 	return ch
+}
+
+func(kv *KVServer) freeMemory(index int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	delete(kv.channelTable, index)
 }

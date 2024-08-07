@@ -8,14 +8,12 @@ import (
 	"6.5840/labrpc"
 )
 
-
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leaderID int
-	clientID int64
+	leaderID  int
+	clientID  int64
 	sequentID int
-
 }
 
 func nrand() int64 {
@@ -47,30 +45,27 @@ func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
 	args := GetArgs{
-		Key: key,
-		ClientID: ck.clientID,
+		Key:       key,
+		ClientID:  ck.clientID,
 		SequentID: ck.sequentID,
 	}
 	ck.sequentID++
 	i := ck.leaderID
 	now := time.Now()
-	for time.Since(now) < 10 * RPCTimeout{
+	for  time.Since(now) < 10 * RPCTimeout{
 		reply := GetReply{}
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if ok {
-			if reply.Err == OK {
-				Debug(dInfo,"clerk success to get the reply of Get")
-				ck.leaderID = i
-				return reply.Value
-			} else {
-				if reply.Err == ErrDuplicateReq {
-					return reply.Value
-				}
-			}
+		if ok && reply.Err == OK {
+			Debug(dInfo, "clerk success to get the reply of Get")
+			ck.leaderID = i
+			return reply.Value
+		} else {
+			i = (i + 1) % len(ck.servers)
 		}
-		i = (i + 1) %len(ck.servers)
 	}
-	Debug(dWarn,"clerk found that the rpc is timeout")
+	Debug(dWarn, "clerk found that the rpc is timeout")
+	//
+	
 	return ""
 }
 
@@ -85,28 +80,28 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	args := PutAppendArgs{
-		Key: key,
-		ClientID: ck.clientID,
+		Key:       key,
+		ClientID:  ck.clientID,
 		SequentID: ck.sequentID,
-		Op: op,
-		Value: value,
+		Op:        op,
+		Value:     value,
 	}
 	ck.sequentID++
 	i := ck.leaderID
 	now := time.Now()
-	for time.Since(now) < 10 * RPCTimeout{
+	for  time.Since(now) < 10 * RPCTimeout{
 		reply := PutAppendReply{}
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-		if ok {
-			if reply.Err == OK {
-				Debug(dInfo,"clerk success to get the reply of PutAppend")
-				ck.leaderID = i
-				return 
-			}
+		if ok && reply.Err == OK {
+			Debug(dInfo, "clerk success to get the reply of PutAppend")
+			ck.leaderID = i
+			return
+
+		} else {
+			i = (i + 1) % len(ck.servers)
 		}
-		i = (i + 1) %len(ck.servers)
 	}
-	Debug(dWarn,"clerk found that the rpc is timeout")
+	//Debug(dWarn, "clerk found that the rpc is timeout")
 }
 
 func (ck *Clerk) Put(key string, value string) {
