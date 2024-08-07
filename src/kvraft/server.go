@@ -63,6 +63,7 @@ func (kv *KVServer) preProcessRequest(clientID int64, sequentID int, err *Err) b
 	if seq, ok := kv.clientTable[clientID]; ok {
 		if seq == sequentID {
 			*err = ErrDuplicateReq
+			Debug(dInfo,"Find that the request is duplicated")
 			return false
 		} else if seq > sequentID {
 			*err = ErrExpireReq
@@ -79,7 +80,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if ok := kv.preProcessRequest(args.ClientID, args.SequentID, &reply.Err); !ok {
 		if reply.Err == ErrDuplicateReq {
 			kv.mu.Lock()
-			reply.Err = OK
 			reply.Value = kv.storage[args.Key]
 			kv.mu.Unlock()
 		}

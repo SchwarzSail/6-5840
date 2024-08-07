@@ -55,7 +55,7 @@ func (ck *Clerk) Get(key string) string {
 	for  time.Since(now) < 10 * RPCTimeout{
 		reply := GetReply{}
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if ok && reply.Err == OK {
+		if ok && (reply.Err == OK || reply.Err == ErrDuplicateReq)  {
 			Debug(dInfo, "clerk success to get the reply of Get")
 			ck.leaderID = i
 			return reply.Value
@@ -92,7 +92,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for  time.Since(now) < 10 * RPCTimeout{
 		reply := PutAppendReply{}
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-		if ok && reply.Err == OK {
+		if ok && (reply.Err == OK || reply.Err == ErrDuplicateReq) {
 			Debug(dInfo, "clerk success to get the reply of PutAppend")
 			ck.leaderID = i
 			return
