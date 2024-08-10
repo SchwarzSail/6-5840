@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,7 +44,6 @@ type KVServer struct {
 	lastApplied  int
 	channelTable map[int]chan RequestInfo //index --> requestID,用于service应用了日志后通知对应的RPC进程
 	isLeader     bool
-	cond         *sync.Cond
 }
 
 // 对每个rpc请求进行预处理
@@ -63,7 +61,7 @@ func (kv *KVServer) preProcessRequest(clientID int64, sequentID int, err *Err) b
 	if seq, ok := kv.clientTable[clientID]; ok {
 		if seq == sequentID {
 			*err = ErrDuplicateReq
-			Debug(dInfo,"Find that the request is duplicated")
+			Debug(dInfo, "Find that the request is duplicated")
 			return false
 		} else if seq > sequentID {
 			*err = ErrExpireReq
@@ -224,7 +222,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.clientTable = make(map[int64]int)
 	kv.channelTable = make(map[int]chan RequestInfo)
 	kv.lastApplied = 0
-	kv.cond = sync.NewCond(&kv.mu)
+	kv.readFromSnapshot(kv.persister.ReadSnapshot())
 	go kv.processApply()
 	return kv
 }
@@ -233,8 +231,23 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 func (kv *KVServer) processApply() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
-		if msg.CommandValid {
+		if msg.SnapshotValid {
 			kv.mu.Lock()
+			if msg.SnapshotIndex <= kv.lastApplied { //重复或者是过期的快照请求
+				kv.mu.Unlock()
+				Debug(dInfo, "duplicated request of snapshot")
+				return
+			}
+			kv.readFromSnapshot(msg.Snapshot)
+			kv.lastApplied = msg.SnapshotIndex
+			kv.mu.Unlock()
+		} else if msg.CommandValid {
+			kv.mu.Lock()
+			if msg.CommandIndex <= kv.lastApplied { //重复或者是过期的apply请求
+				kv.mu.Unlock()
+				Debug(dInfo, "duplicated request of apply")
+				return
+			}
 			op := msg.Command.(Op)
 			if preSequentID, ok := kv.clientTable[op.ClientID]; !ok || preSequentID != op.SequentID {
 				//记录本次rpc的请求
@@ -263,7 +276,12 @@ func (kv *KVServer) processApply() {
 						SequentID: op.SequentID,
 					}
 					Debug(dInfo, "----------service send the reply to channel")
+
 				}
+				kv.mu.Lock()
+				kv.lastApplied = msg.CommandIndex
+				kv.mu.Unlock()
+				kv.persist()
 			} else {
 				kv.mu.Unlock()
 			}
@@ -278,13 +296,13 @@ func (kv *KVServer) createChannel(index int) chan RequestInfo {
 	defer kv.mu.Unlock()
 	ch, ok := kv.channelTable[index]
 	if !ok {
-		kv.channelTable[index] = make(chan RequestInfo,1)
+		kv.channelTable[index] = make(chan RequestInfo, 1)
 		ch = kv.channelTable[index]
 	}
 	return ch
 }
 
-func(kv *KVServer) freeMemory(index int) {
+func (kv *KVServer) freeMemory(index int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	delete(kv.channelTable, index)

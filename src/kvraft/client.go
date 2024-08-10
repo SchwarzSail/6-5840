@@ -64,8 +64,6 @@ func (ck *Clerk) Get(key string) string {
 		}
 	}
 	Debug(dWarn, "clerk found that the rpc is timeout")
-	//
-	
 	return ""
 }
 
