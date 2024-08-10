@@ -300,7 +300,7 @@ func (rf *Raft) apply() {
 				rf.applyCh <- msg
 				rf.mu.Lock()
 				rf.lastApplied = msg.CommandIndex
-				Debug(dCommit,"Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
+				//Debug(dCommit,"Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
 				rf.mu.Unlock()
 				
 			}
