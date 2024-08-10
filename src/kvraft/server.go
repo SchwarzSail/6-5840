@@ -236,7 +236,7 @@ func (kv *KVServer) processApply() {
 			if msg.SnapshotIndex <= kv.lastApplied { //重复或者是过期的快照请求
 				kv.mu.Unlock()
 				Debug(dInfo, "duplicated request of snapshot")
-				return
+				continue
 			}
 			kv.readFromSnapshot(msg.Snapshot)
 			kv.lastApplied = msg.SnapshotIndex
@@ -246,7 +246,7 @@ func (kv *KVServer) processApply() {
 			if msg.CommandIndex <= kv.lastApplied { //重复或者是过期的apply请求
 				kv.mu.Unlock()
 				Debug(dInfo, "duplicated request of apply")
-				return
+				continue
 			}
 			op := msg.Command.(Op)
 			if preSequentID, ok := kv.clientTable[op.ClientID]; !ok || preSequentID != op.SequentID {
@@ -281,7 +281,9 @@ func (kv *KVServer) processApply() {
 				kv.mu.Lock()
 				kv.lastApplied = msg.CommandIndex
 				kv.mu.Unlock()
-				kv.persist()
+				if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+					kv.persist(msg.CommandIndex)
+				}
 			} else {
 				kv.mu.Unlock()
 			}
