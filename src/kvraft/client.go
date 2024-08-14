@@ -52,7 +52,7 @@ func (ck *Clerk) Get(key string) string {
 	ck.sequentID++
 	i := ck.leaderID
 	now := time.Now()
-	for  time.Since(now) < 10 * RPCTimeout{
+	for  time.Since(now) < 60 * RPCTimeout{
 		reply := GetReply{}
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		if ok && (reply.Err == OK || reply.Err == ErrDuplicateReq)  {
@@ -87,7 +87,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.sequentID++
 	i := ck.leaderID
 	now := time.Now()
-	for  time.Since(now) < 10 * RPCTimeout{
+	for  time.Since(now) < 60 * RPCTimeout{
 		reply := PutAppendReply{}
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if ok && (reply.Err == OK || reply.Err == ErrDuplicateReq) {

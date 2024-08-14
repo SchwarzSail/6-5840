@@ -33,4 +33,5 @@ func (kv *KVServer) readFromSnapshot(data []byte) {
 	kv.lastApplied = lastApplied
 	kv.clientTable = clientTable
 	kv.storage = storage
+	Debug(dSnap,"Server read snapshot success")
 }

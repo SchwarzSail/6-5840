@@ -11,7 +11,7 @@ const (
 	ErrRPCTimeout = "ErrRPCTimeout"
 )
 const (
-	RPCTimeout = time.Second
+	RPCTimeout = time.Second * 10
 )
 type Err string
 

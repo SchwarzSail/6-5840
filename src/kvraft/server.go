@@ -25,6 +25,7 @@ type Op struct {
 type RequestInfo struct {
 	ClientID  int64
 	SequentID int
+	Result    string
 }
 
 type KVServer struct {
@@ -43,16 +44,12 @@ type KVServer struct {
 	clientTable  map[int64]int //client --> sequent
 	lastApplied  int
 	channelTable map[int]chan RequestInfo //index --> requestID,用于service应用了日志后通知对应的RPC进程
-	isLeader     bool
 }
 
 // 对每个rpc请求进行预处理
 func (kv *KVServer) preProcessRequest(clientID int64, sequentID int, err *Err) bool {
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
-		kv.mu.Lock()
-		kv.isLeader = false
-		kv.mu.Unlock()
 		*err = ErrWrongLeader
 		return false
 	}
@@ -84,38 +81,31 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 	//封装日志发送给raft
-	index, term, isLeader := kv.rf.Start(Op{
+	kv.mu.Lock()
+	index, _, isLeader := kv.rf.Start(Op{
 		Key:       args.Key,
 		Op:        "Get",
+		From:      kv.me,
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
 	})
+	kv.mu.Unlock()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	kv.mu.Lock()
-	kv.isLeader = true
-	kv.mu.Unlock()
-	Debug(dInfo, "Get: application send the command whose index is %d, and term is %d", index, term)
+	//Debug(dInfo, "Get: application send the command whose index is %d, and term is %d", index, term)
 	//建立对应的channel
 	ch := kv.createChannel(index)
 	defer kv.freeMemory(index)
 
-	//Debug(dTrace, "service make the channel whose ClientID is %d , SequentID is %d, and index is %d", args.ClientID, args.SequentID, index)
+	Debug(dTrace, "service make the channel whose ClientID is %d , SequentID is %d, and index is %d", args.ClientID, args.SequentID, index)
 
 	//等待apply()
 	select {
 	case msg := <-ch:
 		if msg.ClientID == args.ClientID && msg.SequentID == args.SequentID {
-			kv.mu.Lock()
-			if val, ok := kv.storage[args.Key]; ok {
-				reply.Value = val
-			} else {
-				reply.Value = ""
-			}
-			kv.mu.Unlock()
-			reply.Err = OK
+			reply.Value = msg.Result
 			Debug(dInfo, "service get the success reply of Get")
 			return
 		}
@@ -129,25 +119,25 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 	//封装日志发送给raft
-	index, term, isLeader := kv.rf.Start(Op{
+	kv.mu.Lock()
+	index, _, isLeader := kv.rf.Start(Op{
 		Key:       args.Key,
 		Value:     args.Value,
 		Op:        args.Op,
+		From:      kv.me,
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
 	})
+	kv.mu.Unlock()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	kv.mu.Lock()
-	kv.isLeader = true
-	kv.mu.Unlock()
-	Debug(dInfo, "PutAppend: application send the command whose index is %d, and term is %d", index, term)
+	//Debug(dInfo, "PutAppend: application send the command whose index is %d, and term is %d", index, term)
 	//建立对应的channel
 	ch := kv.createChannel(index)
 	defer kv.freeMemory(index)
-	//Debug(dTrace, "service make the channel whose ClientID is %d , SequentID is %d, and index is %d", args.ClientID, args.SequentID, index)
+	Debug(dTrace, "service make the channel whose ClientID is %d , SequentID is %d, and index is %d", args.ClientID, args.SequentID, index)
 
 	//等待apply()
 	select {
@@ -233,9 +223,9 @@ func (kv *KVServer) processApply() {
 		msg := <-kv.applyCh
 		if msg.SnapshotValid {
 			kv.mu.Lock()
-			if msg.SnapshotIndex <= kv.lastApplied { //重复或者是过期的快照请求
+			if msg.SnapshotIndex <= kv.lastApplied { //是重复或者过期的快照请求
 				kv.mu.Unlock()
-				Debug(dInfo, "duplicated request of snapshot")
+				Debug(dInfo, "expired request of snapshot")
 				continue
 			}
 			kv.readFromSnapshot(msg.Snapshot)
@@ -243,39 +233,49 @@ func (kv *KVServer) processApply() {
 			kv.mu.Unlock()
 		} else if msg.CommandValid {
 			kv.mu.Lock()
-			if msg.CommandIndex <= kv.lastApplied { //重复或者是过期的apply请求
+			if msg.CommandIndex <= kv.lastApplied { //是重复或者过期的apply请求
 				kv.mu.Unlock()
-				Debug(dInfo, "duplicated request of apply")
+				Debug(dInfo, "expired request of apply")
 				continue
 			}
 			op := msg.Command.(Op)
 			if preSequentID, ok := kv.clientTable[op.ClientID]; !ok || preSequentID != op.SequentID {
 				//记录本次rpc的请求
 				kv.clientTable[op.ClientID] = op.SequentID
+				var res string
 				switch op.Op {
 				case "Put":
 					kv.storage[op.Key] = op.Value
 				case "Append":
-					if value, ok := kv.storage[op.Key]; ok {
-						kv.storage[op.Key] = value + op.Value
-					} else {
-						kv.storage[op.Key] = op.Value
+					value, ok := kv.storage[op.Key]
+					if !ok {
+						value = ""
 					}
+					kv.storage[op.Key] = value + op.Value
+				case "Get":
+					res = kv.storage[op.Key]
 				}
 				kv.mu.Unlock()
 				//将数据写入channel告知RPC
 				//只有leader才能收到这个由channel发送的消息
-				kv.mu.Lock()
-				ok := kv.isLeader
-				kv.mu.Unlock()
+				_, ok := kv.rf.GetState()
 				if ok {
-					ch := kv.createChannel(msg.CommandIndex)
-					Debug(dTrace, "service: the channel is %v, and index is %d", ch, msg.CommandIndex)
+					//目前这个节点可能是新上任的leader，并没有之前的requestID
+					//此时不发送result给client，强制让client重新请求
+					kv.mu.Lock()
+					ch, exist := kv.channelTable[msg.CommandIndex]
+					kv.mu.Unlock()
+					if !exist {
+						Debug(dTrace, "对应的RPC不存在")
+						continue
+					}
+					//Debug(dTrace, "service: the channel is %v, and index is %d", ch, msg.CommandIndex)
 					ch <- RequestInfo{
 						ClientID:  op.ClientID,
 						SequentID: op.SequentID,
+						Result:    res,
 					}
-					Debug(dInfo, "----------service send the reply to channel")
+					//Debug(dInfo, "----------service send the reply to channel")
 
 				}
 				kv.mu.Lock()

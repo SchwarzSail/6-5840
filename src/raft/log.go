@@ -62,7 +62,6 @@ func (rf *Raft) realIndex(logIndex int) int {
 	return rf.lastIncludedIndex + logIndex
 }
 
-// 数组的长度，包括了哨兵
 func (rf *Raft) logLength() int {
 	return rf.lastIncludedIndex + len(rf.log)
 }
@@ -200,8 +199,8 @@ func (rf *Raft) handleAppendEntries(peer int, args AppendEntriesArgs) {
 		//This is not safe, because both of those values could have been updated since when you sent the RPC.
 		//Instead, the correct thing to do is update matchIndex to be prevLogIndex + len(entries[]) from the arguments you sent in the RPC originally.
 		if reply.Success {
-			rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
-			rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+			rf.matchIndex[peer] = max(args.PrevLogIndex + len(args.Entries), rf.matchIndex[peer])
+			rf.nextIndex[peer] = max(args.PrevLogIndex + len(args.Entries) + 1, rf.nextIndex[peer])
 			rf.commitLogs()
 		} else {
 			if reply.XTerm == -1 {
