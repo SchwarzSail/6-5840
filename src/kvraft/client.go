@@ -3,7 +3,6 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
-	"time"
 
 	"6.5840/labrpc"
 )
@@ -51,11 +50,11 @@ func (ck *Clerk) Get(key string) string {
 	}
 	ck.sequentID++
 	i := ck.leaderID
-	now := time.Now()
-	for  time.Since(now) < 60 * RPCTimeout{
+	
+	for  {
 		reply := GetReply{}
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if ok && (reply.Err == OK || reply.Err == ErrDuplicateReq)  {
+		if ok && reply.Err == OK  {
 			Debug(dInfo, "clerk success to get the reply of Get")
 			ck.leaderID = i
 			return reply.Value
@@ -63,8 +62,7 @@ func (ck *Clerk) Get(key string) string {
 			i = (i + 1) % len(ck.servers)
 		}
 	}
-	Debug(dWarn, "clerk found that the rpc is timeout")
-	return ""
+	
 }
 
 // shared by Put and Append.
@@ -86,11 +84,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	}
 	ck.sequentID++
 	i := ck.leaderID
-	now := time.Now()
-	for  time.Since(now) < 60 * RPCTimeout{
+	
+	for  {
 		reply := PutAppendReply{}
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-		if ok && (reply.Err == OK || reply.Err == ErrDuplicateReq) {
+		if ok && reply.Err == OK {
 			Debug(dInfo, "clerk success to get the reply of PutAppend")
 			ck.leaderID = i
 			return

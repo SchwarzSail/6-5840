@@ -2,16 +2,17 @@ package kvraft
 
 import (
 	"bytes"
-
+	"fmt"
 	"6.5840/labgob"
 )
 
 func (kv *KVServer) persist(index int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(kv.lastApplied)
-	e.Encode(kv.clientTable)
-	e.Encode(kv.storage)
+	if e.Encode(kv.lastApplied) != nil || e.Encode(&kv.clientTable) != nil || e.Encode(&kv.duplicatedTable) != nil|| e.Encode(&kv.storage) != nil {
+		panic(fmt.Sprintf("Server %d failed to encode the statement", kv.me))
+	}
+	
 	raftstate := w.Bytes()
 	kv.rf.Snapshot(index, raftstate)
 }
@@ -25,13 +26,27 @@ func (kv *KVServer) readFromSnapshot(data []byte) {
 	var lastApplied int
 	var clientTable map[int64]int
 	var storage map[string]string
-	if d.Decode(&lastApplied) != nil || d.Decode(&clientTable) != nil || d.Decode(&storage) != nil {
-		panic("read from snapshot failed")
+	var duplicatedTable map[int64]string
+	if err := d.Decode(&lastApplied); err != nil {
+		panic(err)
 	}
-	//kv.mu.Lock()
-	//defer kv.mu.Lock()
+	if err := d.Decode(&clientTable); err != nil {
+		panic(err)
+	}
+	if err := d.Decode(&duplicatedTable); err != nil {
+		panic(err)
+	}
+	if err := d.Decode(&storage); err != nil {
+		panic(err)
+	}
+	// if d.Decode(&lastApplied) != nil || d.Decode(&clientTable) != nil || d.Decode(&duplicatedTable) != nil || d.Decode(&kv.storage) != nil {
+	// 	panic(fmt.Sprintf("Server %d read from snapshot failed",kv.me))
+	// }
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	kv.lastApplied = lastApplied
 	kv.clientTable = clientTable
 	kv.storage = storage
+	kv.duplicatedTable = duplicatedTable
 	Debug(dSnap,"Server read snapshot success")
 }

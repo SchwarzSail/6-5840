@@ -9,9 +9,10 @@ const (
 	ErrDuplicateReq = "ErrDuplicateReq"
 	ErrExpireReq = "ErrExpireReq"
 	ErrRPCTimeout = "ErrRPCTimeout"
+	ErrWrongRequest = "ErrWrongRequest"
 )
 const (
-	RPCTimeout = time.Second * 10
+	RPCTimeout = time.Second * 30
 )
 type Err string
 
