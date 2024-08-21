@@ -40,11 +40,11 @@ type KVServer struct {
 
 	// Your definitions here.
 
-	persister    *raft.Persister
-	storage      map[string]string
-	clientTable  map[int64]int //client --> sequent
-	requestTable map[int]RequestInfo
-	duplicatedTable map[int64] string//保存重复的请求结果
+	persister       *raft.Persister
+	storage         map[string]string
+	clientTable     map[int64]int //client --> sequent
+	requestTable    map[int]*RequestInfo
+	duplicatedTable map[int64]string //保存重复的请求结果
 	//当server收到有效的request时，会将request实例保存到本地
 	lastApplied int
 }
@@ -76,7 +76,7 @@ func (kv *KVServer) preProcessRequest(clientID int64, sequentID int, err *Err, v
 	return true
 }
 
-func (kv *KVServer) saveRequestInstance(index int, info RequestInfo ) {
+func (kv *KVServer) saveRequestInstance(index int, info *RequestInfo) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.requestTable[index] = info
@@ -107,18 +107,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	//保存对应实例
 	info := RequestInfo{
-		ClientID: args.ClientID,
+		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
-		Result: errCh,
+		Result:    errCh,
 	}
-	kv.saveRequestInstance(index, info)
+	kv.saveRequestInstance(index, &info)
 	//等待apply()
 	select {
 	case value := <-ch:
 		reply.Err = OK
 		reply.Value = value
 		Debug(dInfo, "service get the success reply of Get")
-	case err := <- errCh:
+	case err := <-errCh:
+		Debug(dWarn, "---------------Leader changed------------------------")
 		reply.Err = err
 	case <-time.After(RPCTimeout):
 		reply.Err = ErrRPCTimeout
@@ -134,13 +135,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	//封装日志发送给raft
 	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(Op{
-		Key:       args.Key,
-		Value:     args.Value,
-		Op:        args.Op,
-		From:      kv.me,
+		Key:           args.Key,
+		Value:         args.Value,
+		Op:            args.Op,
+		From:          kv.me,
 		ResultChannel: ch,
-		ClientID:  args.ClientID,
-		SequentID: args.SequentID,
+		ClientID:      args.ClientID,
+		SequentID:     args.SequentID,
 	})
 	kv.mu.Unlock()
 	if !isLeader {
@@ -150,18 +151,19 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	//保存对应实例
 	info := RequestInfo{
-		ClientID: args.ClientID,
+		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
-		Result: errCh,
+		Result:    errCh,
 	}
-	kv.saveRequestInstance(index, info)
+	kv.saveRequestInstance(index, &info)
 	//等待apply()
 	select {
 	case <-ch:
 		reply.Err = OK
 		Debug(dInfo, "service get the success reply of PutAppend")
-	case err := <- errCh:
+	case err := <-errCh:
 		reply.Err = err
+		Debug(dWarn, "---------------Leader changed------------------------")
 	case <-time.After(RPCTimeout):
 		reply.Err = ErrRPCTimeout
 	}
@@ -224,7 +226,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.storage = make(map[string]string)
 	kv.clientTable = make(map[int64]int)
-	kv.requestTable = make(map[int]RequestInfo)
+	kv.requestTable = make(map[int]*RequestInfo)
 	kv.duplicatedTable = make(map[int64]string)
 	kv.lastApplied = 0
 	kv.readFromSnapshot(kv.persister.ReadSnapshot())
@@ -235,7 +237,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 // service 用于处理applyCh
 func (kv *KVServer) processApply() {
 	for !kv.killed() {
-		msg := <- kv.applyCh
+		msg := <-kv.applyCh
 		//需要时刻检测当前是否为leader
 		_, isLeader := kv.rf.GetState()
 		if !isLeader {
@@ -252,19 +254,18 @@ func (kv *KVServer) processApply() {
 			kv.mu.Unlock()
 		} else if msg.CommandValid {
 			//判断错误请求
+			Debug(dTrace, "Server %d start to apply the cmd whose index is %d",kv.me, msg.CommandIndex)
 			op := msg.Command.(Op)
-			kv.judgeInstance(op,msg.CommandIndex)
+			kv.judgeInstance(op, msg.CommandIndex)
 			if msg.CommandIndex <= kv.lastApplied {
 				Debug(dWarn, "the apply is duplicated or expired")
 				continue
 			}
 			//执行command
-			res := kv.executeCommand(op)
-			kv.mu.Lock()
-			kv.lastApplied = msg.CommandIndex
-			kv.mu.Unlock()
-			//唤醒对于进程
-			if op.From == kv.me && op.ResultChannel != nil {
+			res := kv.executeCommand(op, msg.CommandIndex)
+			//唤醒对应进程，再次判断自己是不是leader
+			_, isLeader := kv.rf.GetState()
+			if isLeader && op.From == kv.me && op.ResultChannel != nil {
 				op.ResultChannel <- res
 			}
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
@@ -278,24 +279,26 @@ func (kv *KVServer) freeMemory() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for key, val := range kv.requestTable {
-		val.Result <- ErrWrongLeader//通过channel告知RPC结束进程
+		Debug(dWarn, "Server %d send the close channel to RPC---", kv.me)
+		val.Result <- ErrWrongLeader //通过channel告知RPC结束进程
 		delete(kv.requestTable, key)
 	}
 }
 
-func (kv *KVServer) judgeInstance(op Op, index int)  {
-	
+func (kv *KVServer) judgeInstance(op Op, index int) {
+
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	info, ok := kv.requestTable[index]
+	//保证请求实例和apply接收到的应该是一样的
 	if ok && (info.ClientID != op.ClientID || info.SequentID != op.SequentID) {
 		//通知rpc进程
 		info.Result <- ErrWrongRequest
 	}
-	delete(kv.requestTable,index)
+	delete(kv.requestTable, index)
 }
 
-func (kv *KVServer) executeCommand(op Op) (res string) {
+func (kv *KVServer) executeCommand(op Op, index int) (res string) {
 	preSequentID, ok := kv.clientTable[op.ClientID]
 	if ok && preSequentID == op.SequentID {
 		res = kv.duplicatedTable[op.ClientID]
@@ -305,7 +308,7 @@ func (kv *KVServer) executeCommand(op Op) (res string) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.clientTable[op.ClientID] = op.SequentID
-	switch op.Op{
+	switch op.Op {
 	case "Get":
 		res = kv.storage[op.Key]
 	case "Put":
@@ -317,6 +320,7 @@ func (kv *KVServer) executeCommand(op Op) (res string) {
 		res = kv.storage[op.Key]
 	}
 	kv.duplicatedTable[op.ClientID] = res
-	Debug(dTrace,"Server %d apply the cmd whose clientID is %d, and sequentID is %d", kv.me ,op.ClientID, op.SequentID)
+	Debug(dTrace, "Server %d apply the cmd whose clientID is %d, and sequentID is %d", kv.me, op.ClientID, op.SequentID)
+	kv.lastApplied = index
 	return
 }

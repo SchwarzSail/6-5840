@@ -12,7 +12,7 @@ const (
 	ErrWrongRequest = "ErrWrongRequest"
 )
 const (
-	RPCTimeout = time.Second * 30
+	RPCTimeout = time.Second * 5
 )
 type Err string
 

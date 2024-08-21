@@ -109,7 +109,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	//具体实现在apply()
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.lastIncludedIndex >= index || rf.commitIndex < index {
+	if rf.lastIncludedIndex >= index {
 		return
 	}
 	realIndex := rf.logIndex(index)
@@ -120,7 +120,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log[0].Term = lastIncludedTerm
 	rf.snapshot = snapshot
 	rf.persist()
-	Debug(dSnap,"Server %d receive a request of installing snapshot",rf.me)
+	Debug(dSnap,"Server %d apply installing snapshot, and lastIncludeIndex is %d",rf.me, index)
+	//go rf.quickSyncSnapshot()
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -147,7 +148,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	//with a smaller index
 	reply.Term = rf.currentTerm
 	if args.LastIncludedIndex <= rf.lastIncludedIndex || args.LastIncludedIndex <= rf.commitIndex{
-		//DPrintf("Server %d find that there is no meaning of creating new snapshot", rf.me)
+		DPrintf("Server %d find that there is no meaning of creating new snapshot", rf.me)
 		return
 	}
 	//6. If existing log entry has same index and term as snapshot’s last included entry, retain log entries following it and reply
@@ -200,7 +201,7 @@ func (rf *Raft) handleInstallSnapshot(peer int, args InstallSnapshotArgs) {
 			rf.stateChanged(Follower)
 			return
 		}
-		rf.matchIndex[peer] = max(rf.matchIndex[peer], args.LastIncludedIndex)
-		rf.nextIndex[peer] = max(rf.nextIndex[peer], args.LastIncludedIndex + 1)
+		rf.matchIndex[peer] = args.LastIncludedIndex
+		rf.nextIndex[peer] = args.LastIncludedIndex + 1
 	}
 }

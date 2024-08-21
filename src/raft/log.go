@@ -199,8 +199,10 @@ func (rf *Raft) handleAppendEntries(peer int, args AppendEntriesArgs) {
 		//This is not safe, because both of those values could have been updated since when you sent the RPC.
 		//Instead, the correct thing to do is update matchIndex to be prevLogIndex + len(entries[]) from the arguments you sent in the RPC originally.
 		if reply.Success {
-			rf.matchIndex[peer] = max(args.PrevLogIndex + len(args.Entries), rf.matchIndex[peer])
-			rf.nextIndex[peer] = max(args.PrevLogIndex + len(args.Entries) + 1, rf.nextIndex[peer])
+			rf.matchIndex[peer] = max(rf.matchIndex[peer], args.PrevLogIndex + len(args.Entries))
+			//防止nextIndex回退，因为可以收到同一任期但是是过期的回复
+			rf.nextIndex[peer] = max(rf.nextIndex[peer],args.PrevLogIndex + len(args.Entries) + 1)
+			Debug(dInfo,"Leader %d whose nextIndex[%d] is %d",rf.me,peer, rf.nextIndex[peer])
 			rf.commitLogs()
 		} else {
 			if reply.XTerm == -1 {
@@ -213,7 +215,7 @@ func (rf *Raft) handleAppendEntries(peer int, args AppendEntriesArgs) {
 			//If it finds an entry in its log with that term,
 			//it should set nextIndex to be the one beyond the index of the last entry in that term in its log.
 			lastIndexOfXTerm := -1
-			for i := len(rf.log) - 1; i > rf.commitIndex; i-- {
+			for i := len(rf.log) - 1; i > rf.logIndex(rf.commitIndex); i-- {
 				if rf.log[i].Term == reply.XTerm {
 					lastIndexOfXTerm = rf.realIndex(i)
 					break

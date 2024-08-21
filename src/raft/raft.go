@@ -276,7 +276,6 @@ func (rf *Raft) apply() {
 			rf.applyCh <- msg
 			Debug(dSnap, "Server %d install the snapshot and the snapshotIndex is %d",rf.me, msg.SnapshotIndex)
 			rf.mu.Lock()
-			rf.lastIncludedIndex = msg.SnapshotIndex
 			rf.lastApplied = max(rf.lastApplied, msg.SnapshotIndex)
 			rf.mu.Unlock()
 			continue
