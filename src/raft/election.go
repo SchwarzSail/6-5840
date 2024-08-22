@@ -63,6 +63,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//set currentTerm = T, convert to follower (§5.1)
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.termUpdated = true
+		rf.cond.Broadcast()
 		rf.stateChanged(Follower)
 	}
 	//2. If votedFor is null or candidateId, and candidate’s log is at
@@ -148,6 +150,8 @@ func (rf *Raft) startElection(term int) {
 						if reply.Term > rf.currentTerm {
 							Debug(dClient, "candidate %d find its term is too late which is %d", rf.me, rf.currentTerm)
 							rf.currentTerm = reply.Term
+							rf.termUpdated = true
+							rf.cond.Broadcast()
 							rf.stateChanged(Follower)
 							return
 						}

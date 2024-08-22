@@ -126,19 +126,13 @@ type Raft struct {
 	lastIncludedIndex int //snapshot的边界
 	snapshot          []byte
 	applyingSnapshot  bool //用于应用层标识是否应用snapshot
+	termUpdated bool //标识term改变，并告知应用层
 }
 
 func (rf *Raft) stateChanged(state State) {
 	defer rf.persist()
 	rf.resetElectionTimer()
 	rf.resetHeartBeatTimer()
-	if rf.state != state {
-		msg := ApplyMsg{
-			TermUpdated: true,
-		}
-		rf.applyCh <- msg
-		//rf.cond.Broadcast()
-	}
 	rf.state = state
 	switch rf.state {
 	case Leader:
@@ -154,6 +148,8 @@ func (rf *Raft) stateChanged(state State) {
 	case Candidate:
 		DPrintf("Server %d becomes candidate", rf.me)
 		rf.currentTerm++
+		rf.termUpdated = true
+		rf.cond.Broadcast()
 		rf.votedFor = rf.me
 	case Follower:
 		DPrintf("Server %d becomes follower", rf.me)
@@ -266,6 +262,24 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
+ 
+func (rf *Raft) applyTermUpdated() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for !rf.termUpdated {
+			rf.cond.Wait()
+		}
+		if rf.termUpdated {
+			rf.termUpdated = false
+			msg := ApplyMsg {
+				TermUpdated: true,
+			}
+			rf.mu.Unlock()
+			rf.applyCh <-msg
+			Debug(dTerm, "Server %d change its term which is %d",rf.me, rf.currentTerm)
+		}
+	}
+}
 
 func (rf *Raft) apply() {
 	for !rf.killed() {
@@ -349,5 +363,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 
 	go rf.apply()
+	go rf.applyTermUpdated()
 	return rf
 }

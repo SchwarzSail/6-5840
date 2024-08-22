@@ -138,6 +138,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.termUpdated = true
+		rf.cond.Broadcast()
 		rf.stateChanged(Follower)
 	}
 	//lab中不要求2,3,4,5
@@ -198,6 +200,8 @@ func (rf *Raft) handleInstallSnapshot(peer int, args InstallSnapshotArgs) {
 		}
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
+			rf.termUpdated = true
+			rf.cond.Broadcast()
 			rf.stateChanged(Follower)
 			return
 		}

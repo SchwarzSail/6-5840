@@ -93,6 +93,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//set currentTerm = T, convert to follower (§5.1)
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.termUpdated = true
+		rf.cond.Broadcast()
 		rf.stateChanged(Follower)
 	}
 
@@ -189,6 +191,8 @@ func (rf *Raft) handleAppendEntries(peer int, args AppendEntriesArgs) {
 		}
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
+			rf.termUpdated = true
+			rf.cond.Broadcast()
 			DPrintf("Leader %d find its term is too late", rf.me)
 			rf.stateChanged(Follower)
 			return
