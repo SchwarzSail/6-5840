@@ -10,6 +10,7 @@ const (
 	ErrExpireReq = "ErrExpireReq"
 	ErrRPCTimeout = "ErrRPCTimeout"
 	ErrWrongRequest = "ErrWrongRequest"
+	ErrTerm = "ErrTerm"
 )
 const (
 	RPCTimeout = time.Second * 5

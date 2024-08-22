@@ -49,6 +49,8 @@ type ApplyMsg struct {
 	Snapshot      []byte
 	SnapshotTerm  int
 	SnapshotIndex int
+	//For Lab4:
+	TermUpdated bool
 }
 
 type State int
@@ -130,6 +132,13 @@ func (rf *Raft) stateChanged(state State) {
 	defer rf.persist()
 	rf.resetElectionTimer()
 	rf.resetHeartBeatTimer()
+	if rf.state != state {
+		msg := ApplyMsg{
+			TermUpdated: true,
+		}
+		rf.applyCh <- msg
+		//rf.cond.Broadcast()
+	}
 	rf.state = state
 	switch rf.state {
 	case Leader:

@@ -239,9 +239,9 @@ func (kv *KVServer) processApply() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
 		//需要时刻检测当前是否为leader
-		_, isLeader := kv.rf.GetState()
-		if !isLeader {
+		if msg.TermUpdated {
 			kv.freeMemory()
+			continue
 		}
 		if msg.SnapshotValid {
 			if msg.SnapshotIndex <= kv.lastApplied {
