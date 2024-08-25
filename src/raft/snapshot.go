@@ -132,10 +132,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		reply.Term = rf.currentTerm
 		return
 	}
-	rf.resetElectionTimer()
-	rf.resetHeartBeatTimer()
-	defer rf.persist()
-
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.termUpdated = true
@@ -153,6 +149,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		DPrintf("Server %d find that there is no meaning of creating new snapshot", rf.me)
 		return
 	}
+	rf.resetElectionTimer()
+	rf.resetHeartBeatTimer()
+	defer rf.persist()
 	//6. If existing log entry has same index and term as snapshot’s last included entry, retain log entries following it and reply
 	for i := 1; i < len(rf.log); i++ {
 		if rf.log[i].Term == args.LastIncludedTerm && rf.realIndex(i) == args.LastIncludedIndex {

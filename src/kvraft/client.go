@@ -50,19 +50,23 @@ func (ck *Clerk) Get(key string) string {
 	}
 	ck.sequentID++
 	i := ck.leaderID
-	
-	for  {
+
+	for {
 		reply := GetReply{}
+		Debug(dInfo, "Client call the Get RPC, and ClientID is %d, SequentID is %d", ck.clientID, ck.sequentID)
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if ok && reply.Err == OK  {
-			Debug(dInfo, "clerk success to get the reply of Get")
+		if ok && reply.Err == OK {
+			Debug(dInfo, "clerk success to get the reply of Get ,and clientid is %d, seqid is %d", args.ClientID, args.SequentID)
 			ck.leaderID = i
 			return reply.Value
 		} else {
+			if reply.Err == ErrRPCTimeout {
+				Debug(dWarn, "RPC Get timeout,and clientid is %d, seqid is %d", args.ClientID, args.SequentID)
+			}
 			i = (i + 1) % len(ck.servers)
 		}
 	}
-	
+
 }
 
 // shared by Put and Append.
@@ -84,16 +88,20 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	}
 	ck.sequentID++
 	i := ck.leaderID
-	
-	for  {
+
+	for {
 		reply := PutAppendReply{}
+		Debug(dInfo, "Client call the PutAppend RPC, and ClientID is %d, SequentID is %d", ck.clientID, ck.sequentID)
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if ok && reply.Err == OK {
-			Debug(dInfo, "clerk success to get the reply of PutAppend")
+			Debug(dInfo, "clerk success to get the reply of PutAppend ,and clientid is %d, seqid is %d", args.ClientID, args.SequentID)
 			ck.leaderID = i
 			return
 
 		} else {
+			if reply.Err == ErrRPCTimeout {
+				Debug(dWarn, "RPC PutAppend timeout and clientid is %d, seqid is %d", args.ClientID, args.SequentID)
+			}
 			i = (i + 1) % len(ck.servers)
 		}
 	}

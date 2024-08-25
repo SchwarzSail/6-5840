@@ -9,7 +9,7 @@ import (
 func (kv *KVServer) persist(index int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	if e.Encode(kv.lastApplied) != nil || e.Encode(&kv.clientTable) != nil || e.Encode(&kv.duplicatedTable) != nil|| e.Encode(&kv.storage) != nil {
+	if e.Encode(&kv.clientTable) != nil || e.Encode(&kv.duplicatedTable) != nil|| e.Encode(&kv.storage) != nil {
 		panic(fmt.Sprintf("Server %d failed to encode the statement", kv.me))
 	}
 	
@@ -23,13 +23,9 @@ func (kv *KVServer) readFromSnapshot(data []byte) {
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var lastApplied int
 	var clientTable map[int64]int
 	var storage map[string]string
 	var duplicatedTable map[int64]string
-	if err := d.Decode(&lastApplied); err != nil {
-		panic(err)
-	}
 	if err := d.Decode(&clientTable); err != nil {
 		panic(err)
 	}
@@ -44,7 +40,6 @@ func (kv *KVServer) readFromSnapshot(data []byte) {
 	// }
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	kv.lastApplied = lastApplied
 	kv.clientTable = clientTable
 	kv.storage = storage
 	kv.duplicatedTable = duplicatedTable

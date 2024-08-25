@@ -276,7 +276,6 @@ func (rf *Raft) applyTermUpdated() {
 			}
 			rf.mu.Unlock()
 			rf.applyCh <-msg
-			Debug(dTerm, "Server %d change its term which is %d",rf.me, rf.currentTerm)
 		}
 	}
 }
