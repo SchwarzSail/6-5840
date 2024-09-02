@@ -1,5 +1,7 @@
 package shardctrler
 
+import "time"
+
 //
 // Shard controller: assigns shards to replication groups.
 //
@@ -28,14 +30,44 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+
+func(cfg *Config) clone() *Config {
+	res := &Config{
+		Num: cfg.Num,
+		Groups: make(map[int][]string),
+	}
+	copy(res.Shards[:], cfg.Shards[:])
+	for k, v := range cfg.Groups {
+		temp := make([]string, len(v))
+		copy(temp, v)
+		res.Groups[k] = temp
+	}
+	return res
+}
+
+const RPCTimeout = 5000 * time.Millisecond
+
 const (
 	OK = "OK"
+	ErrWrongLeader = "ErrWrongLeader"
+	ErrWrongRequest = "ErrWrongRequest"
+	ErrExpireReq = "ErrExpiredReq"
+	ErrRPCTimeout = "ErrRPCTimeout"
+)
+
+const (
+	Join  = "Join"
+	Leave = "Leave"
+	Move  = "Move"
+	Query = "Query"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers   map[int][]string // new GID -> servers mappings
+	ClientID  int64
+	SequentID int
 }
 
 type JoinReply struct {
@@ -44,7 +76,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs      []int
+	ClientID  int64
+	SequentID int
 }
 
 type LeaveReply struct {
@@ -53,8 +87,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard     int
+	GID       int
+	ClientID  int64
+	SequentID int
 }
 
 type MoveReply struct {
@@ -63,7 +99,9 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num       int // desired config number
+	ClientID  int64
+	SequentID int
 }
 
 type QueryReply struct {
