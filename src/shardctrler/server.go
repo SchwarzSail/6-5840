@@ -399,15 +399,17 @@ func (sc *ShardCtrler) loadBalance(cfg *Config) {
 		gids = append(gids, gid)
 	}
 	sort.Ints(gids)
+	h := NewHeap()
 	for _, gid := range gids {
 		if _, ok := gidToShards[gid]; !ok {
 			gidToShards[gid] = 0
 		}
+		h.push(&GidShardsMapping{Gid: gid, ShardCount: gidToShards[gid]})
 	}
 	avg, remain := idealLoad(NShards, len(gids))
 	//record the gid that has remainder
 	duplicatedMap := make(map[int]bool)
-
+	
 	//record the shard that have no gid to be responsible for
 	shardAssignMapping := make([]int, 0, NShards)
 	for i := 0; i < NShards; i++ {
@@ -428,29 +430,19 @@ func (sc *ShardCtrler) loadBalance(cfg *Config) {
 			shardAssignMapping = append(shardAssignMapping, i)
 			cfg.Shards[i] = 0
 			gidToShards[gid]--
+			h.update(gid, gidToShards[gid])
 		}
 	}
 
 	//assign the shards
 	for len(shardAssignMapping) >0 {
-		for _, gid := range gids {
-			if len(shardAssignMapping) == 0 {
-				break
-			}
-			haveRemain := func (gid int) bool {
-				if gidToShards[gid] == avg && len(duplicatedMap) < remain {
-					duplicatedMap[gid] = true
-					return true
-				}
-				return false
-			}(gid)
-			if (gidToShards[gid] < avg) || haveRemain {
-				shard := shardAssignMapping[0]
-				cfg.Shards[shard] = gid
-				gidToShards[gid]++
-				shardAssignMapping = shardAssignMapping[1:]
-			} 
-		}
+		minElement := h.pop()
+		shard := shardAssignMapping[0]
+		shardAssignMapping = shardAssignMapping[1:]
+		cfg.Shards[shard] = minElement.Gid
+		gidToShards[minElement.Gid]++
+		minElement.ShardCount++
+		h.push(minElement)
 	}
 }
 func (sc *ShardCtrler) join(args *JoinArgs) {
