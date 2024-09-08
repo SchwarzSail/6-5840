@@ -51,6 +51,8 @@ type ApplyMsg struct {
 	SnapshotIndex int
 	//For Lab4:
 	TermUpdated bool
+	//for lab5
+	CurrentTerm int
 }
 
 type State int
@@ -126,7 +128,7 @@ type Raft struct {
 	lastIncludedIndex int //snapshot的边界
 	snapshot          []byte
 	applyingSnapshot  bool //用于应用层标识是否应用snapshot
-	termUpdated bool //标识term改变，并告知应用层
+	termUpdated       bool //标识term改变，并告知应用层
 }
 
 func (rf *Raft) stateChanged(state State) {
@@ -148,8 +150,6 @@ func (rf *Raft) stateChanged(state State) {
 	case Candidate:
 		DPrintf("Server %d becomes candidate", rf.me)
 		rf.currentTerm++
-		rf.termUpdated = true
-		rf.cond.Broadcast()
 		rf.votedFor = rf.me
 	case Follower:
 		DPrintf("Server %d becomes follower", rf.me)
@@ -201,7 +201,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		})
 		index = rf.lastLogIndex()
 		Debug(dLeader, "Leader %d append the log whose index is %d, and term is %d", rf.me, index, term)
-		go rf.quicklySync()//发起快速同步日记请求(lab4A)
+		go rf.quicklySync() //发起快速同步日记请求(lab4A)
 		rf.persist()
 	}
 	return index, term, isLeader
@@ -241,7 +241,7 @@ func (rf *Raft) ticker() {
 			//If election timeout elapses without receiving AppendEntries
 			//RPC from current leader or granting vote to candidate:
 			//convert to candidate
-			if time.Since(rf.lastElectionTime) > rf.electionTimeout() && (rf.votedFor == -1 || time.Since(rf.lastHeartBestsTime) > rf.heartBeatTimeOut())  {
+			if time.Since(rf.lastElectionTime) > rf.electionTimeout() && (rf.votedFor == -1 || time.Since(rf.lastHeartBestsTime) > rf.heartBeatTimeOut()) {
 				Debug(dClient, "Server %d find the heartbeats timeout", rf.me)
 				rf.stateChanged(Candidate)
 				rf.resetElectionTimer()
@@ -249,7 +249,7 @@ func (rf *Raft) ticker() {
 			}
 		case Candidate: //2. candidate的选举时间超时
 			if time.Since(rf.lastElectionTime) > rf.electionTimeout() {
-				Debug(dClient,"Server %d find the election is timeout and previous term is %d", rf.me, rf.currentTerm)
+				Debug(dClient, "Server %d find the election is timeout and previous term is %d", rf.me, rf.currentTerm)
 				rf.stateChanged(Candidate)
 				go rf.startElection(rf.currentTerm)
 			}
@@ -262,7 +262,7 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
- 
+
 func (rf *Raft) applyTermUpdated() {
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -271,11 +271,12 @@ func (rf *Raft) applyTermUpdated() {
 		}
 		if rf.termUpdated {
 			rf.termUpdated = false
-			msg := ApplyMsg {
+			msg := ApplyMsg{
+				CurrentTerm: rf.currentTerm,
 				TermUpdated: true,
 			}
 			rf.mu.Unlock()
-			rf.applyCh <-msg
+			rf.applyCh <- msg
 		}
 	}
 }
@@ -296,7 +297,7 @@ func (rf *Raft) apply() {
 			}
 			rf.mu.Unlock()
 			rf.applyCh <- msg
-			Debug(dSnap, "Server %d install the snapshot and the snapshotIndex is %d",rf.me, msg.SnapshotIndex)
+			Debug(dSnap, "Server %d install the snapshot and the snapshotIndex is %d", rf.me, msg.SnapshotIndex)
 			rf.mu.Lock()
 			rf.lastApplied = max(rf.lastApplied, msg.SnapshotIndex)
 			rf.mu.Unlock()
@@ -321,7 +322,7 @@ func (rf *Raft) apply() {
 				rf.lastApplied = msg.CommandIndex
 				//Debug(dCommit,"Server %d apply the log whose index is %d, and term is %d", rf.me, msg.CommandIndex, rf.log[rf.logIndex(msg.CommandIndex)].Term)
 				rf.mu.Unlock()
-				
+
 			}
 		}
 	}

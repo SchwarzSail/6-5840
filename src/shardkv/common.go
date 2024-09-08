@@ -1,5 +1,7 @@
 package shardkv
 
+import "time"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -10,15 +12,27 @@ package shardkv
 //
 
 const (
-	OK              = "OK"
-	ErrNoKey        = "ErrNoKey"
-	ErrWrongGroup   = "ErrWrongGroup"
-	ErrWrongLeader  = "ErrWrongLeader"
-	ErrWrongRequest = "ErrWrongRequest"
-	ErrExpireReq    = "ErrExpireReq"
+	OK               = "OK"
+	ErrNoKey         = "ErrNoKey"
+	ErrWrongGroup    = "ErrWrongGroup"
+	ErrWrongLeader   = "ErrWrongLeader"
+	ErrDuplicateReq  = "ErrDuplicateReq"
+	ErrExpireReq     = "ErrExpireReq"
+	ErrRPCTimeout    = "ErrRPCTimeout"
+	ErrWrongRequest  = "ErrWrongRequest"
+	ErrShardNotReady = "ErrShardNotReady"
+	ErrTerm          = "ErrTerm"
+	ErrShards        = "ErrShards"
 )
 
+const RPCTimeout = 5000 * time.Millisecond
+
 type Err string
+
+type DuplicatedKey struct {
+	Shard    int
+	ClientID int64
+}
 
 // Put or Append
 type PutAppendArgs struct {
@@ -47,4 +61,29 @@ type GetArgs struct {
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+// ShardInfo use for key to grantee the uniqueness
+type ShardInfo struct {
+	ShardID int
+	Version int
+}
+
+type ShardMigrationInfo struct {
+	Args    *ShardMigrationArgs
+	Servers []string
+}
+
+type ShardMigrationArgs struct {
+	ShardID         int
+	Num             int
+	Storage         map[string]string
+	DuplicatedTable map[DuplicatedKey]string
+	ClientID        int64
+	SequentID       int
+	From            int
+}
+
+type ShardMigrationReply struct {
+	Success bool
 }
