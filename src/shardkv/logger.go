@@ -13,7 +13,7 @@ func getVerbosity() int {
 	v := os.Getenv("VERBOSE")
 	level := 0
 	if v != "" {
-		
+
 		var err error
 		level, err = strconv.Atoi(v)
 		if err != nil {
@@ -24,6 +24,7 @@ func getVerbosity() int {
 }
 
 type logTopic string
+
 const (
 	dClient  logTopic = "CLNT"
 	dCommit  logTopic = "CMIT"

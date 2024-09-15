@@ -16,21 +16,19 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	OpType        string
-	ResultMsg     chan string
-	ErrMsg        chan Err
-	From          int
-	Key           string
-	Value         string
-	ClientID      int64
-	SequentID     int
-	NewConfig     *shardctrler.Config
-	MigrationArgs *ShardMigrationArgs
-}
-
-type RequestInfo struct {
-	ClientID  int64
-	SequentID int
+	OpType          string
+	ResultMsg       chan string
+	ErrMsg          chan Err
+	From            int
+	Key             string
+	Value           string
+	ClientID        int64
+	SequentID       int
+	ShardID         int
+	Version         int
+	NewConfig       *shardctrler.Config
+	Data            map[string]string
+	DuplicatedTable map[int64]string
 }
 
 type ShardKV struct {
@@ -46,22 +44,20 @@ type ShardKV struct {
 	// Your definitions here.
 	dead            int32
 	persister       *raft.Persister
-	storage         map[string]string
-	clientTable     map[int64]int //client --> sequent
+	storage         map[int]map[string]string
+	duplicatedTable map[int]map[int64]string //record duplicated result
+	clientTable     map[int64]int            //client --> sequent
 	requestTable    map[int]*RequestInfo
-	duplicatedTable map[DuplicatedKey]string //record duplicated result
 	lastApplied     int
 	//for duplicated dection
 	clientID  int64
 	sequentID int
 
-	mck *shardctrler.Clerk
-	cfg *shardctrler.Config
+	mck       *shardctrler.Clerk
+	config    shardctrler.Config
+	preConfig shardctrler.Config
 	//shard
-	shardToBeSentTable map[ShardInfo]ShardMigrationInfo
-	// when server receive the shard data, but data's version is higher than the current config, we need to cache the data
-	shardRequestCache map[ShardInfo]*ShardMigrationArgs
-	shardTobeReceived map[int]int
+	shards []State //record the shard state that current server is responsible for
 	//config
 	cond *sync.Cond
 }
@@ -74,15 +70,12 @@ func (kv *ShardKV) preProcessRequest(key string, clientID int64, sequentID int, 
 	}
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+	shard := key2shard(key)
 	if preSequentID, ok := kv.clientTable[clientID]; ok {
 		if preSequentID == sequentID {
 			*err = OK
 			if value != nil {
-				key := DuplicatedKey{
-					Shard:    key2shard(key),
-					ClientID: clientID,
-				}
-				*value = kv.duplicatedTable[key]
+				*value = kv.duplicatedTable[shard][clientID]
 			}
 			Debug(dInfo, "Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID, sequentID)
 			return false
@@ -137,12 +130,12 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	case value := <-ch:
 		reply.Err = OK
 		reply.Value = value
-		Debug(dInfo, "service get the success reply of Get")
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d]", kv.gid, kv.config.Num, kv.me, key2shard(args.Key))
 	case err := <-errCh:
-		Debug(dWarn, "PutAppend: The Err is %v", err)
+		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Num, kv.me, err)
 		reply.Err = err
 	case <-time.After(RPCTimeout):
-		Debug(dWarn, "Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.me, args.ClientID, args.SequentID)
+		Debug(dWarn, "[%d] [%d] Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.gid, kv.config.Num, kv.me, args.ClientID, args.SequentID)
 		reply.Err = ErrRPCTimeout
 	}
 
@@ -173,7 +166,6 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
-
 	//保存对应实例
 	info := RequestInfo{
 		ClientID:  args.ClientID,
@@ -184,7 +176,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	select {
 	case <-ch:
 		reply.Err = OK
-		Debug(dInfo, "service get the success reply of PutAppend")
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d]", kv.gid, kv.config.Num, kv.me, key2shard(args.Key))
 	case err := <-errCh:
 		reply.Err = err
 		Debug(dWarn, "Get: The Err is %v", err)
@@ -240,16 +232,14 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Go's RPC library to marshall/unmarshall.
 
 	labgob.Register(Op{})
-	labgob.Register(&RequestInfo{})
-	labgob.Register(&ShardMigrationArgs{})
-	labgob.Register(&ShardMigrationReply{})
+
 	kv := new(ShardKV)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.make_end = make_end
 	kv.gid = gid
 	kv.ctrlers = ctrlers
-
+	kv.persister = persister
 	// Your initialization code here.
 
 	// Use something like this to talk to the shardctrler:
@@ -257,19 +247,26 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.cond = sync.NewCond(&kv.mu)
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.storage = make(map[string]string)
+	kv.storage = make(map[int]map[string]string)
+	for i := 0; i < shardctrler.NShards; i++ {
+		kv.storage[i] = make(map[string]string)
+	}
+	kv.duplicatedTable = make(map[int]map[int64]string)
+	for i := 0; i < shardctrler.NShards; i++ {
+		kv.duplicatedTable[i] = make(map[int64]string)
+	}
 	kv.clientTable = make(map[int64]int)
 	kv.requestTable = make(map[int]*RequestInfo)
-	kv.shardToBeSentTable = make(map[ShardInfo]ShardMigrationInfo)
-	kv.shardRequestCache = make(map[ShardInfo]*ShardMigrationArgs)
-	kv.duplicatedTable = make(map[DuplicatedKey]string)
-	kv.shardTobeReceived = make(map[int]int)
+	kv.shards = make([]State, shardctrler.NShards)
 	kv.clientID = nrand()
-	cfg := kv.mck.Query(-1)
-	kv.cfg = &cfg
+	cfg := kv.mck.Query(0)
+	kv.config = cfg
+	kv.preConfig = cfg
+	kv.readFromSnapshot(kv.persister.ReadSnapshot())
 	go kv.processApply()
 	go kv.processMonitor()
-	go kv.processSendingShards()
+	go kv.migratingDaemon()
+	go kv.receiveDaemon()
 	return kv
 }
 
@@ -282,16 +279,16 @@ func (kv *ShardKV) processApply() {
 			kv.freeMemory()
 			continue
 		}
-		//if msg.SnapshotValid {
-		//	if msg.SnapshotIndex <= kv.lastApplied {
-		//		Debug(dWarn, "the snapshot is duplicated or expired")
-		//		continue
-		//	}
-		//	kv.readFromSnapshot(msg.Snapshot)
-		//	kv.mu.Lock()
-		//	kv.lastApplied = msg.SnapshotIndex
-		//	kv.mu.Unlock()
-		//}
+		if msg.SnapshotValid {
+			if msg.SnapshotIndex <= kv.lastApplied {
+				Debug(dWarn, "the snapshot is duplicated or expired")
+				continue
+			}
+			kv.readFromSnapshot(msg.Snapshot)
+			kv.mu.Lock()
+			kv.lastApplied = msg.SnapshotIndex
+			kv.mu.Unlock()
+		}
 		if msg.CommandValid {
 			op := msg.Command.(Op)
 			//Debug(dTrace, "Server %d start to apply the cmd whose index is %d",kv.me, msg.CommandIndex)
@@ -303,37 +300,49 @@ func (kv *ShardKV) processApply() {
 			switch op.OpType {
 			case "UpdateConfig":
 				//Debug(dInfo, "Server %d start to updateConfig", kv.me)
-				kv.updateConfig(op)
-			case "ReceiveShards":
-				kv.migrateShards(op)
+				kv.handleUpdateConfig(op)
+			case "UpdateReceiveState":
+				kv.handleUpdateReceiveState(op)
+				if op.From == kv.me && op.ResultMsg != nil {
+					op.ResultMsg <- ""
+				}
+			case "UpdateMigrateState":
+				kv.handleUpdateMigrateState(op)
+				if op.From == kv.me && op.ResultMsg != nil {
+					op.ResultMsg <- ""
+				}
+			case "Receive":
+				kv.handleReceive(op)
 				if op.From == kv.me && op.ResultMsg != nil {
 					op.ResultMsg <- ""
 				}
 			default:
 				//before we execute the command, we need to check the key is whether the server is responsible for
 				shard := key2shard(op.Key)
-				gid, isNotReady := kv.shardTobeReceived[shard]
-				if kv.cfg.Shards[shard] != kv.gid {
+				isReady := kv.shards[shard] == Ready
+				if kv.config.Shards[shard] != kv.gid {
 					if op.From == kv.me && op.ErrMsg != nil {
 						op.ErrMsg <- ErrWrongGroup
 					}
-				} else if isNotReady {
+				} else if !isReady {
 					if op.From == kv.me && op.ErrMsg != nil {
-						Debug(dInfo, "expect receive the shard from %d", gid)
-						op.ErrMsg <- ErrShardNotReady
+						//Debug(dInfo, "expect receive the shard from %d", )
+						op.ErrMsg <- ErrWrongGroup
 					}
 				} else {
 					//execute command
-					res := kv.executeCommand(op, msg.CommandIndex)
+					res := kv.executeCommand(op)
 					if op.From == kv.me && op.ResultMsg != nil {
 						Debug(dTrace, "Server %d call the RPC to continue", kv.me)
 						op.ResultMsg <- res
 					}
-					//if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-					//	kv.persist(msg.CommandIndex)
-					//}
 				}
-
+				kv.mu.Lock()
+				kv.lastApplied = msg.CommandIndex
+				kv.mu.Unlock()
+				if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+					kv.persist(kv.lastApplied)
+				}
 			}
 		}
 	}
@@ -359,15 +368,12 @@ func (kv *ShardKV) judgeInstance(op Op, index int) {
 	delete(kv.requestTable, index)
 }
 
-func (kv *ShardKV) executeCommand(op Op, index int) (res string) {
+func (kv *ShardKV) executeCommand(op Op) (res string) {
 	preSequentID, ok := kv.clientTable[op.ClientID]
-	key := DuplicatedKey{
-		Shard:    key2shard(op.Key),
-		ClientID: op.ClientID,
-	}
+	shard := key2shard(op.Key)
 	if ok && preSequentID == op.SequentID {
-		res = kv.duplicatedTable[key]
-		Debug(dTrace, "Server %d find the cmd is duplicated", kv.me)
+		res = kv.duplicatedTable[shard][op.ClientID]
+		Debug(dTrace, "[%d] [%d] Server %d find the cmd is duplicated", kv.gid, kv.config.Num, kv.me)
 		return
 	}
 	kv.mu.Lock()
@@ -375,17 +381,16 @@ func (kv *ShardKV) executeCommand(op Op, index int) (res string) {
 	kv.clientTable[op.ClientID] = op.SequentID
 	switch op.OpType {
 	case "Get":
-		res = kv.storage[op.Key]
+		res = kv.storage[shard][op.Key]
 	case "Put":
-		kv.storage[op.Key] = op.Value
+		kv.storage[shard][op.Key] = op.Value
 		res = op.Value
 	case "Append":
-		val := kv.storage[op.Key]
-		kv.storage[op.Key] = val + op.Value
-		res = kv.storage[op.Key]
+		val := kv.storage[shard][op.Key]
+		kv.storage[shard][op.Key] = val + op.Value
+		res = kv.storage[shard][op.Key]
 	}
-	kv.duplicatedTable[key] = res
+	kv.duplicatedTable[shard][op.ClientID] = res
 	Debug(dTrace, "Server %d apply the cmd whose clientID is %d, and sequentID is %d", kv.me, op.ClientID, op.SequentID)
-	kv.lastApplied = index
 	return
 }

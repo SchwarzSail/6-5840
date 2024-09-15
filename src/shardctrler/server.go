@@ -83,7 +83,7 @@ func (sc *ShardCtrler) preProcessRequest(clientID int64, sequentID int, err *Err
 			if value != nil {
 				value = sc.duplicatedTable[clientID]
 			}
-			Debug(dInfo, "Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID, sequentID)
+			Debug(dInfo, "--Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID, sequentID)
 			return false
 		} else if preSequentID > sequentID {
 			*err = ErrExpireReq
@@ -105,6 +105,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
 		reply.WrongLeader = true
+		Debug(dTrace, "Join operation is invalid")
 		return
 	}
 	ch := make(chan *Config)
@@ -144,6 +145,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
 		reply.WrongLeader = true
+		Debug(dTrace, "Leave operation is invalid")
 		return
 	}
 	ch := make(chan *Config)
@@ -183,6 +185,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
 		reply.WrongLeader = true
+		Debug(dTrace, "Move operation is invalid")
 		return
 	}
 	ch := make(chan *Config)
@@ -219,7 +222,13 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
-	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, &reply.Config); !ok {
+	//if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, &reply.Config); !ok {
+	//	reply.WrongLeader = true
+	//	Debug(dTrace, "Query operation is invalid")
+	//	return
+	//}
+	_, isLeader := sc.rf.GetState()
+	if !isLeader {
 		reply.WrongLeader = true
 		return
 	}
@@ -379,8 +388,6 @@ func idealLoad(totalShards int, totalGroups int) (int, int) {
 	return totalShards / totalGroups, totalShards % totalGroups
 }
 
-
-
 func (sc *ShardCtrler) loadBalance(cfg *Config) {
 	gidToShards := make(map[int]int)
 	Debug(dTrace, "cfg.Shards is %v\n", cfg.Shards)
@@ -409,7 +416,7 @@ func (sc *ShardCtrler) loadBalance(cfg *Config) {
 	avg, remain := idealLoad(NShards, len(gids))
 	//record the gid that has remainder
 	duplicatedMap := make(map[int]bool)
-	
+
 	//record the shard that have no gid to be responsible for
 	shardAssignMapping := make([]int, 0, NShards)
 	for i := 0; i < NShards; i++ {
@@ -418,11 +425,11 @@ func (sc *ShardCtrler) loadBalance(cfg *Config) {
 		if gid == 0 {
 			shardAssignMapping = append(shardAssignMapping, i)
 		} else if gidToShards[gid] > avg {
-			if _, exist := duplicatedMap[gid]; exist && gidToShards[gid] == avg + 1 {
+			if _, exist := duplicatedMap[gid]; exist && gidToShards[gid] == avg+1 {
 				continue
 			}
 			//the length of duplicatedMap must be less than remain
-			if gidToShards[gid] == avg + 1 && len(duplicatedMap) < remain {
+			if gidToShards[gid] == avg+1 && len(duplicatedMap) < remain {
 				duplicatedMap[gid] = true
 				continue
 			}
@@ -435,7 +442,7 @@ func (sc *ShardCtrler) loadBalance(cfg *Config) {
 	}
 
 	//assign the shards
-	for len(shardAssignMapping) >0 {
+	for len(shardAssignMapping) > 0 {
 		minElement := h.pop()
 		shard := shardAssignMapping[0]
 		shardAssignMapping = shardAssignMapping[1:]

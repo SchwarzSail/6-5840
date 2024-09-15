@@ -1,258 +1,362 @@
 package shardkv
 
 import (
-	"6.5840/shardctrler"
+	"fmt"
 	"time"
 )
 
-func (kv *ShardKV) migrateData(args *ShardMigrationArgs) {
-	for k, v := range args.Storage {
-		kv.storage[k] = v
+func DeepCopyStorageMap(src map[string]string) map[string]string {
+	fmt.Println(src)
+	dst := make(map[string]string)
+	for k, v := range src {
+		dst[k] = v
 	}
-	for k, v := range args.DuplicatedTable {
-		kv.duplicatedTable[k] = v
-	}
+	return dst
 }
 
-func (kv *ShardKV) processMonitor() {
+func DeepCopyDuplicatedTableMap(src map[int64]string) map[int64]string {
+	dst := make(map[int64]string)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// ------------------------------------Migration----------------------------
+// monitor the shards' migration
+func (kv *ShardKV) migratingDaemon() {
 	for !kv.killed() {
+
+		//only leader can monitor it
+		if _, isLeader := kv.rf.GetState(); !isLeader {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
 		kv.mu.Lock()
-		currentConfig := kv.cfg
-		newConfig := kv.mck.Query(-1)
-		if newConfig.Num != currentConfig.Num {
-			for i := currentConfig.Num + 1; i <= newConfig.Num; i++ {
-				cfg := kv.mck.Query(i)
-				Debug(dTrace, "processMonitor: Server %d find the new config whose version is %d", kv.me, cfg.Num)
-				kv.rf.Start(Op{
-					OpType:    "UpdateConfig",
-					NewConfig: &cfg,
-					From:      kv.me,
-				})
+		//collect shards need to be migrated
+		shardToBeMigrated := make([]int, 0)
+		for shard, state := range kv.shards {
+			if state == WaitingMigrated {
+				shardToBeMigrated = append(shardToBeMigrated, shard)
 			}
+		}
+		if len(shardToBeMigrated) != 0 {
+			Debug(dInfo, "migratingDaemon: [%d] [%d] Leader %d is migrating shards %v", kv.gid, kv.config.Num, kv.me, shardToBeMigrated)
+			kv.migrating(shardToBeMigrated)
 		}
 		kv.mu.Unlock()
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func (kv *ShardKV) processSendingShards() {
-	for !kv.killed() {
+// call RPC
+func (kv *ShardKV) migrating(shards []int) {
+	for _, shard := range shards {
+		//prepare args
+		args := &MigrationArgs{
+			ShardID:         shard,
+			Version:         kv.config.Num,
+			Data:            make(map[string]string),
+			DuplicatedTable: make(map[int64]string),
+			ClientID:        kv.clientID,
+			SequentID:       kv.sequentID,
+		}
+		kv.sequentID++
+		args.Data = DeepCopyStorageMap(kv.storage[shard])
+		args.DuplicatedTable = DeepCopyDuplicatedTableMap(kv.duplicatedTable[shard])
+		//Call RPCs
+		Debug(dTrace, "migrating: [%d] [%d] Leader %d: the config  Group is %v", kv.gid, kv.config.Num, kv.me, kv.config.Groups[kv.config.Shards[shard]])
+		for _, server := range kv.config.Groups[kv.config.Shards[shard]] {
+			go kv.handleMigrating(server, args, shard)
+		}
+
+	}
+	time.Sleep(200 * time.Millisecond)
+}
+
+func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int) {
+	var reply MigrationReply
+	srv := kv.make_end(server)
+	ok := srv.Call("ShardKV.MigrateShards", args, &reply)
+	if ok && reply.Success {
+		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s success", kv.gid, kv.config.Num, kv.me, shard, server)
 		kv.mu.Lock()
-		for len(kv.shardToBeSentTable) == 0 {
-			kv.cond.Wait()
-		}
-		Debug(dInfo, "processSendingShards: The shardToBeSentTable is %v", kv.shardToBeSentTable)
-		for _, data := range kv.shardToBeSentTable {
-			go kv.migratingShards(data)
-		}
-		kv.mu.Unlock()
-		time.Sleep(400 * time.Millisecond)
-	}
-}
-
-// call RPCs
-func (kv *ShardKV) migratingShards(info ShardMigrationInfo) {
-	Debug(dTrace, "migratingShards: Server %d start to migrate the shard data whose info's ShardID is %d, and version is %d, data comes from %d", kv.me, info.Args.ShardID, info.Args.Num, info.Args.From)
-	for _, i := range info.Servers {
-		server := kv.make_end(i)
-		var reply ShardMigrationReply
-		ok := server.Call("ShardKV.MigrateShards", info.Args, &reply)
-		if ok && reply.Success {
-			kv.mu.Lock()
-			Debug(dTrace, "migratingShards: Server %d success to get the reply of RPC, whose version is %d", kv.me, info.Args.Num)
-			key := ShardInfo{
-				ShardID: info.Args.ShardID,
-				Version: info.Args.Num,
-			}
-			delete(kv.shardToBeSentTable, key)
-			//Debug(dTrace, "migratingShards: Server %d find that the shardToBeSentTable is %v", kv.me, kv.shardToBeSentTable)
+		//make the consensus
+		ch := make(chan string)
+		ErrCh := make(chan Err)
+		index, _, isLeader := kv.rf.Start(Op{
+			OpType:    "UpdateMigrateState",
+			ClientID:  kv.clientID,
+			SequentID: kv.sequentID,
+			ResultMsg: ch,
+			ShardID:   shard,
+			Version:   args.Version,
+			ErrMsg:    ErrCh,
+		})
+		if !isLeader {
 			kv.mu.Unlock()
+			return
 		}
+		kv.requestTable[index] = &RequestInfo{
+			ClientID:  kv.clientID,
+			SequentID: kv.sequentID,
+		}
+		kv.sequentID++
+		kv.mu.Unlock()
+		select {
+		case <-ch:
+			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d success make the consensus", kv.gid, kv.config.Num, kv.me)
+		case err := <-ErrCh:
+			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d failed make the consensus %v", kv.gid, kv.config.Num, kv.me, err)
+		case <-time.After(RPCTimeout):
+			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d timeout make the consensus", kv.gid, kv.config.Num, kv.me)
+		}
+	} else {
+		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s failed", kv.gid, kv.config.Num, kv.me, shard, server)
 	}
 }
 
-// only leader can handle this RPC request
-func (kv *ShardKV) MigrateShards(args *ShardMigrationArgs, reply *ShardMigrationReply) {
-	if args.Num < kv.cfg.Num {
-		reply.Success = true
+// MigrateShards other send shards to current server
+func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
+	//check the version
+	kv.mu.Lock()
+	if kv.config.Num < args.Version {
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d has  smaller version %v", kv.gid, kv.config.Num, kv.me, args.Version)
+		reply.Success = false
+		kv.mu.Unlock()
 		return
 	}
-
-	ch := make(chan string, 1)
-	errCh := make(chan Err, 1)
-	kv.mu.Lock()
+	if kv.config.Num < args.Version {
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d is waiting for the new config", kv.gid, kv.config.Num, kv.me)
+		reply.Success = false
+		kv.mu.Unlock()
+		return
+	}
+	if kv.shards[args.ShardID] == Ready {
+		Debug(dInfo, "---MigrateShards: [%d] [%d] Server %d has received the shard %d", kv.gid, kv.config.Num, kv.me, args.ShardID)
+		reply.Success = true
+		kv.mu.Unlock()
+		return
+	}
+	//make the consensus
+	ch := make(chan string)
+	ErrCh := make(chan Err)
 	index, _, isLeader := kv.rf.Start(Op{
-		OpType:        "ReceiveShards",
-		MigrationArgs: args,
-		From:          kv.me,
-		ResultMsg:     ch,
-		ErrMsg:        errCh,
-		ClientID:      args.ClientID,
-		SequentID:     args.SequentID,
+		OpType:          "Receive",
+		ResultMsg:       ch,
+		ErrMsg:          ErrCh,
+		From:            kv.me,
+		ClientID:        args.ClientID,
+		SequentID:       args.SequentID,
+		Data:            args.Data,
+		Version:         kv.config.Num,
+		ShardID:         args.ShardID,
+		DuplicatedTable: args.DuplicatedTable,
 	})
 	kv.mu.Unlock()
 	if !isLeader {
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d is not leader", kv.gid, kv.config.Num, kv.me)
 		reply.Success = false
 		return
 	}
-	//保存对应实例
 	info := RequestInfo{
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
 	}
-	kv.saveRequestInstance(index, &info)
-	//等待apply()
+	kv.requestTable[index] = &info
+
 	select {
 	case <-ch:
 		reply.Success = true
-		Debug(dInfo, "MigrateShards: Server %d receive the shard data whose version is %d", kv.me, args.Num)
-	case err := <-errCh:
-		reply.Success = false
-		Debug(dWarn, "MigrateShards: The Err is %v", err)
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d success make the consensus", kv.gid, kv.config.Num, kv.me)
+	case err := <-ErrCh:
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d failed make the consensus %v", kv.gid, kv.config.Num, kv.me, err)
 	case <-time.After(RPCTimeout):
-		Debug(dWarn, "MigrateShards: Server %d find that the RPC is timeout, and ClientID is %d, SequentID is %d", kv.me, args.ClientID, args.SequentID)
-		reply.Success = false
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d timeout make the consensus", kv.gid, kv.config.Num, kv.me)
 	}
 }
 
-func (kv *ShardKV) migrateShards(op Op) {
+func (kv *ShardKV) handleUpdateMigrateState(op Op) {
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	if kv.cfg.Num > op.MigrationArgs.Num {
+	if kv.config.Num > op.Version {
+		Debug(dInfo, "handleUpdateMigrateState: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, kv.config.Num, kv.me, op.Version)
+		kv.mu.Unlock()
 		return
 	}
-	Debug(dInfo, "migrateShards: Server %d start to migrate the shard data whose version is %d, and gid is %d", kv.me, op.MigrationArgs.Num, op.MigrationArgs.From)
-	//grantee the gid is equal to the current server's gid
-	if kv.cfg.Shards[op.MigrationArgs.ShardID] == kv.gid {
-		if from, ok := kv.shardTobeReceived[op.MigrationArgs.ShardID]; ok {
-			if op.MigrationArgs.Num != kv.cfg.Num {
-				Debug(dTrace, "migrateShards: Server %d find that the version %d is not equal to the current config's version, which is %d", kv.me, op.MigrationArgs.Num, kv.cfg.Num)
-				return
-			}
-			if from != op.MigrationArgs.From {
-				panic("")
-			}
-			Debug(dTrace, "migrateShards: Server %d apply the shard data whose version is %d, and gid is %d", kv.me, op.MigrationArgs.Num, op.MigrationArgs.From)
-			kv.migrateData(op.MigrationArgs)
-			delete(kv.shardTobeReceived, op.MigrationArgs.ShardID)
-			return
-		}
-	}
-	key := ShardInfo{
-		ShardID: op.MigrationArgs.ShardID,
-		Version: op.MigrationArgs.Num,
-	}
-	Debug(dTrace, "--------migrateShards: Server %d save the cache data whose version is %d, and gid is %d", kv.me, op.MigrationArgs.Num, op.MigrationArgs.From)
-	kv.shardRequestCache[key] = op.MigrationArgs
-}
 
-func (kv *ShardKV) applyCacheData(newConfig *shardctrler.Config) {
-	for i := 0; i < shardctrler.NShards; i++ {
-		if kv.cfg.Shards[i] != 0 {
-			//it is the new shards that the current server  never work for it before, so we can apply it
-			if kv.cfg.Shards[i] != kv.gid && newConfig.Shards[i] == kv.gid {
-				key := ShardInfo{
-					ShardID: i,
-					Version: newConfig.Num,
-				}
-				if args, ok := kv.shardRequestCache[key]; ok {
-					Debug(dTrace, "applyCacheData: Server %d find the cache data whose version is %d, and server its version is %d", kv.me, args.Num, kv.cfg.Num)
-					kv.migrateData(args)
-					delete(kv.shardRequestCache, key)
-				} else {
-					Debug(dTrace, "applyCacheData: Server %d find doesn't find the cache data , expect from %d, and version is %d", kv.me, kv.cfg.Shards[i], newConfig.Num)
-					kv.shardTobeReceived[i] = kv.cfg.Shards[i]
-				}
-			}
-		}
+	if kv.shards[op.ShardID] == WaitingMigrated {
+		kv.shards[op.ShardID] = NotExist
+		kv.storage[op.ShardID] = make(map[string]string)
 	}
-}
 
-func (kv *ShardKV) updateConfig(op Op) {
-	kv.mu.Lock()
-	// check the config message
-	if kv.cfg.Num+1 != op.NewConfig.Num {
-		Debug(dTrace, "updateConfig: Server %d find that the new config's version is not the next version. The kv's version is %d, and newConfig's version is %d", kv.me, kv.cfg.Num, op.NewConfig.Num)
-		kv.mu.Unlock()
-		return
-	}
-	if len(kv.shardTobeReceived) != 0 {
-		Debug(dTrace, "updateConfig: Server %d find that the shardTobeReceived is not empty, which is %v", kv.me, kv.shardTobeReceived)
-		kv.mu.Unlock()
-		return
-	}
-	// grantee the current server is leader, if not ,we need to apply the cache config immediately
-	_, isLeader := kv.rf.GetState()
-	if !isLeader {
-		Debug(dTrace, "updateConfig: Follower %d start to apply the cache config", kv.me)
-		kv.applyCacheData(op.NewConfig)
-		kv.cfg = op.NewConfig
-		kv.mu.Unlock()
-		return
-	}
-	//prepare the data that need to be migrated
-	shardsMigration := make([]int, 0, shardctrler.NShards)
-	for i := 0; i < shardctrler.NShards; i++ {
-		if kv.cfg.Shards[i] == kv.gid && op.NewConfig.Shards[i] != kv.gid {
-			shardsMigration = append(shardsMigration, i)
-		}
-	}
-	kv.applyCacheData(op.NewConfig)
-	if len(shardsMigration) != 0 {
-		kv.prepareMigratingShards(shardsMigration, op.NewConfig)
-	}
-	kv.cfg = op.NewConfig
-	Debug(dInfo, "updateConfig: Server %d updated config to version %d", kv.me, kv.cfg.Num)
 	kv.mu.Unlock()
 }
 
-// prepare the args to send
-func (kv *ShardKV) prepareMigratingShards(shards []int, newConfig *shardctrler.Config) {
-	shardData := make(map[int]ShardMigrationInfo)
-	for _, shard := range shards {
-		args := &ShardMigrationArgs{
-			ShardID:         shard,
-			Num:             newConfig.Num,
-			Storage:         make(map[string]string),
-			DuplicatedTable: make(map[DuplicatedKey]string),
-			ClientID:        kv.clientID,
-			SequentID:       kv.sequentID,
-			From:            kv.gid,
+// ----------------------------------Receive------------------------------
+func (kv *ShardKV) receiveDaemon() {
+	for !kv.killed() {
+		if _, isLeader := kv.rf.GetState(); !isLeader {
+			time.Sleep(200 * time.Millisecond)
+			continue
 		}
-		kv.sequentID++
-		shardData[shard] = ShardMigrationInfo{
-			Args:    args,
-			Servers: newConfig.Groups[newConfig.Shards[shard]],
-		}
-	}
-
-	//deep copy
-	for k, v := range kv.storage {
-		shard := key2shard(k)
-		if data, ok := shardData[shard]; ok {
-			Debug(dTrace, "prepareMigratingShards: Server %d send that the key is %v", kv.me, k)
-			data.Args.Storage[k] = v
-			delete(kv.storage, k)
-		}
-	}
-
-	for k, v := range kv.duplicatedTable {
-		for _, shard := range shards {
-			if shard == k.Shard {
-				Debug(dTrace, "prepareMigratingShards: Server %d find that the duplicated key is %v", kv.me, k)
-				shardData[shard].Args.DuplicatedTable[k] = v
-				delete(kv.duplicatedTable, k)
+		kv.mu.Lock()
+		shardToBeReceived := make([]int, 0)
+		for shard, state := range kv.shards {
+			if state == WaitingReceived {
+				shardToBeReceived = append(shardToBeReceived, shard)
 			}
 		}
+		if len(shardToBeReceived) != 0 {
+			Debug(dInfo, "receiveDaemon: [%d] [%d] Leader %d is receiving shards %v", kv.gid, kv.config.Num, kv.me, shardToBeReceived)
+			kv.receiving(shardToBeReceived)
+		}
+		kv.mu.Unlock()
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) receiving(shards []int) {
+	for _, shard := range shards {
+		args := &ReceiveArgs{
+			ShardID:   shard,
+			Version:   kv.config.Num,
+			ClientID:  kv.clientID,
+			SequentID: kv.sequentID,
+		}
+		kv.sequentID++
+		//call rpc from preConfig
+		Debug(dTrace, "receiving: [%d] [%d] Leader %d: the preConfig Group is %v", kv.gid, kv.config.Num, kv.me, kv.preConfig.Groups[kv.preConfig.Shards[shard]])
+		for _, server := range kv.preConfig.Groups[kv.preConfig.Shards[shard]] {
+			//Debug(dTrace, "receiving: [%d] [%d] Leader %d: the server is %s", kv.gid, kv.config.Num, kv.me, server)
+			go kv.handleReceiving(server, args, shard)
+		}
+	}
+}
+
+func (kv *ShardKV) handleReceiving(server string, args *ReceiveArgs, shard int) {
+	var reply ReceiveReply
+	srv := kv.make_end(server)
+	ok := srv.Call("ShardKV.ReceiveShards", args, &reply)
+	if ok && reply.Success {
+		Debug(dInfo, "handleReceiving: [%d] [%d] Leader %d receive shard %v from %s success", kv.gid, kv.config.Num, kv.me, shard, server)
+		kv.mu.Lock()
+		//make the consensus
+		ch := make(chan string)
+		ErrCh := make(chan Err)
+		index, _, isLeader := kv.rf.Start(Op{
+			OpType:          "Receive",
+			ShardID:         shard,
+			Version:         kv.config.Num,
+			Data:            reply.Data,
+			DuplicatedTable: reply.DuplicatedTable,
+			ClientID:        kv.clientID,
+			SequentID:       kv.sequentID,
+			ResultMsg:       ch,
+			ErrMsg:          ErrCh,
+		})
+		kv.mu.Unlock()
+		if !isLeader {
+			return
+		}
+		kv.mu.Lock()
+		kv.requestTable[index] = &RequestInfo{
+			ClientID:  kv.clientID,
+			SequentID: kv.sequentID,
+		}
+		kv.sequentID++
+		kv.mu.Unlock()
+		select {
+		case <-ch:
+			Debug(dInfo, "handleReceiving: [%d] [%d] Leader %d success make the consensus", kv.gid, kv.config.Num, kv.me)
+		case err := <-ErrCh:
+			Debug(dInfo, "handleReceiving: [%d] [%d] Leader %d failed make the consensus %v", kv.gid, kv.config.Num, kv.me, err)
+		case <-time.After(RPCTimeout):
+		}
+	} else {
+		Debug(dInfo, "handleReceiving: [%d] [%d] Leader %d receive shard %d from %s failed", kv.gid, kv.config.Num, kv.me, shard, server)
+	}
+}
+
+// ReceiveShards when other servers call this RPC, it means current server need to reply the shard data to the other server
+func (kv *ShardKV) ReceiveShards(args *ReceiveArgs, reply *ReceiveReply) {
+	//Debug(dInfo, "ReceiveShards: [%d] [%d] Server %d receive shard request %d", kv.gid, kv.config.Num, kv.me, args.ShardID)
+	kv.mu.Lock()
+	if kv.config.Num < args.Version {
+		Debug(dInfo, "ReceiveShards: [%d] [%d] Server %d has smaller version %v", kv.gid, kv.config.Num, kv.me, args.Version)
+		reply.Success = false
+		kv.mu.Unlock()
+		return
 	}
 
-	//send the args
-	for _, data := range shardData {
-		key := ShardInfo{
-			ShardID: data.Args.ShardID,
-			Version: data.Args.Num,
-		}
-		kv.shardToBeSentTable[key] = data
+	//make the consensus
+	ch := make(chan string)
+	ErrCh := make(chan Err)
+	index, _, isLeader := kv.rf.Start(Op{
+		OpType:    "UpdateReceiveState",
+		ShardID:   args.ShardID,
+		Version:   args.Version,
+		ResultMsg: ch,
+		ErrMsg:    ErrCh,
+		From:      kv.me,
+		ClientID:  args.ClientID,
+		SequentID: args.SequentID,
+	})
+	kv.mu.Unlock()
+	if !isLeader {
+		Debug(dInfo, "ReceiveShards: [%d] [%d] Server %d is not leader", kv.gid, kv.config.Num, kv.me)
+		reply.Success = false
+		return
 	}
-	kv.cond.Broadcast()
+	kv.mu.Lock()
+	kv.requestTable[index] = &RequestInfo{
+		ClientID:  args.ClientID,
+		SequentID: args.SequentID,
+	}
+	kv.mu.Unlock()
+	select {
+	case <-ch:
+		Debug(dTrace, "ReceiveShards: [%d] [%d] Server %d shards %v", kv.gid, kv.config.Num, kv.me, kv.shards)
+		reply.Data = DeepCopyStorageMap(kv.storage[args.ShardID])
+		reply.DuplicatedTable = DeepCopyDuplicatedTableMap(kv.duplicatedTable[args.ShardID])
+		reply.Success = true
+		Debug(dInfo, "ReceiveShards: [%d] [%d] Server %d send shard %d success", kv.gid, kv.config.Num, kv.me, args.ShardID)
+	case err := <-ErrCh:
+		reply.Success = false
+		Debug(dInfo, "ReceiveShards: [%d] [%d] Server %d send shard %d failed %v", kv.gid, kv.config.Num, kv.me, args.ShardID, err)
+	case <-time.After(RPCTimeout):
+		reply.Success = false
+	}
+}
+
+func (kv *ShardKV) handleReceive(op Op) {
+	kv.mu.Lock()
+	if kv.config.Num > op.Version || kv.config.Num < op.Version {
+		Debug(dInfo, "handleReceive: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, kv.config.Num, kv.me, op.Version)
+		kv.mu.Unlock()
+		return
+	}
+	if kv.shards[op.ShardID] == WaitingReceived {
+		kv.storage[op.ShardID] = DeepCopyStorageMap(op.Data)
+		kv.duplicatedTable[op.ShardID] = DeepCopyDuplicatedTableMap(op.DuplicatedTable)
+		kv.shards[op.ShardID] = Ready
+		Debug(dInfo, "handleReceive: [%d] [%d] Server %d receive shard %d success", kv.gid, kv.config.Num, kv.me, op.ShardID)
+		Debug(dInfo, "handleReceive: [%d] [%d] Server %d shards' %v", kv.gid, kv.config.Num, kv.me, kv.shards)
+	}
+	kv.mu.Unlock()
+}
+
+// it means that the leader receive the other obtaining request, if success, all server need to update the state
+func (kv *ShardKV) handleUpdateReceiveState(op Op) {
+	kv.mu.Lock()
+	if kv.config.Num > op.Version {
+		Debug(dInfo, "handleUpdateReceiveState: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, kv.config.Num, kv.me, op.Version)
+		kv.mu.Unlock()
+		return
+	}
+	if kv.shards[op.ShardID] == WaitingMigrated {
+		kv.shards[op.ShardID] = NotExist
+		kv.storage[op.ShardID] = make(map[string]string)
+	}
+
+	kv.mu.Unlock()
 }

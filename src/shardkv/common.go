@@ -1,6 +1,8 @@
 package shardkv
 
-import "time"
+import (
+	"time"
+)
 
 //
 // Sharded key/value server.
@@ -12,22 +14,35 @@ import "time"
 //
 
 const (
-	OK               = "OK"
-	ErrNoKey         = "ErrNoKey"
-	ErrWrongGroup    = "ErrWrongGroup"
-	ErrWrongLeader   = "ErrWrongLeader"
-	ErrDuplicateReq  = "ErrDuplicateReq"
-	ErrExpireReq     = "ErrExpireReq"
-	ErrRPCTimeout    = "ErrRPCTimeout"
-	ErrWrongRequest  = "ErrWrongRequest"
-	ErrShardNotReady = "ErrShardNotReady"
-	ErrTerm          = "ErrTerm"
-	ErrShards        = "ErrShards"
+	OK                 = "OK"
+	ErrNoKey           = "ErrNoKey"
+	ErrWrongGroup      = "ErrWrongGroup"
+	ErrWrongLeader     = "ErrWrongLeader"
+	ErrDuplicateReq    = "ErrDuplicateReq"
+	ErrExpireReq       = "ErrExpireReq"
+	ErrRPCTimeout      = "ErrRPCTimeout"
+	ErrWrongRequest    = "ErrWrongRequest"
+	ErrShardNotReady   = "ErrShardNotReady"
+	ErrVersionNotMatch = "ErrVersionNotMatch"
 )
 
 const RPCTimeout = 5000 * time.Millisecond
 
 type Err string
+
+type State int
+
+const (
+	Ready State = iota
+	WaitingReceived
+	WaitingMigrated
+	NotExist
+)
+
+type RequestInfo struct {
+	ClientID  int64
+	SequentID int
+}
 
 type DuplicatedKey struct {
 	Shard    int
@@ -86,4 +101,32 @@ type ShardMigrationArgs struct {
 
 type ShardMigrationReply struct {
 	Success bool
+}
+
+// migrating
+type MigrationArgs struct {
+	ShardID         int
+	Version         int
+	Data            map[string]string
+	DuplicatedTable map[int64]string
+	ClientID        int64
+	SequentID       int
+}
+
+type MigrationReply struct {
+	Success bool
+}
+
+// recevie
+type ReceiveArgs struct {
+	ShardID   int
+	Version   int
+	ClientID  int64
+	SequentID int
+}
+
+type ReceiveReply struct {
+	Success         bool
+	Data            map[string]string
+	DuplicatedTable map[int64]string
 }
