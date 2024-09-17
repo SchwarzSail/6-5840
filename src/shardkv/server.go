@@ -28,7 +28,7 @@ type Op struct {
 	Version         int
 	NewConfig       *shardctrler.Config
 	Data            map[string]string
-	DuplicatedTable map[int64]string
+	DuplicatedTable map[int64]LastReply
 }
 
 type ShardKV struct {
@@ -45,17 +45,15 @@ type ShardKV struct {
 	dead            int32
 	persister       *raft.Persister
 	storage         map[int]map[string]string
-	duplicatedTable map[int]map[int64]string //record duplicated result
-	clientTable     map[int64]int            //client --> sequent
+	duplicatedTable map[int64]LastReply //record duplicated result
 	requestTable    map[int]*RequestInfo
 	lastApplied     int
 	//for duplicated dection
 	clientID  int64
 	sequentID int
 
-	mck       *shardctrler.Clerk
-	config    shardctrler.Config
-	preConfig shardctrler.Config
+	mck    *shardctrler.Clerk
+	config shardctrler.Config
 	//shard
 	shards []State //record the shard state that current server is responsible for
 	//config
@@ -70,23 +68,24 @@ func (kv *ShardKV) preProcessRequest(key string, clientID int64, sequentID int, 
 	}
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	shard := key2shard(key)
-	if preSequentID, ok := kv.clientTable[clientID]; ok {
-		if preSequentID == sequentID {
-			*err = OK
-			if value != nil {
-				*value = kv.duplicatedTable[shard][clientID]
-			}
-			Debug(dInfo, "Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID, sequentID)
-			return false
-		} else if preSequentID > sequentID {
-			*err = ErrExpireReq
-			return false
-		} else {
-			return true
-		}
+	lastReply, ok := kv.duplicatedTable[clientID]
+	if !ok {
+		return true
 	}
-	return true
+	switch {
+	case lastReply.SequentID == sequentID:
+		*err = OK
+		if value != nil {
+			*value = lastReply.Value
+		}
+		return false
+	case lastReply.SequentID > sequentID:
+		*err = ErrExpireReq
+		Debug(dTrace, "[%d] [%d] server %d find that the request %d %d is expired", kv.gid, kv.config.Num, kv.me, clientID, sequentID)
+		return false
+	default:
+		return true
+	}
 }
 
 func (kv *ShardKV) saveRequestInstance(index int, info *RequestInfo) {
@@ -107,6 +106,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(Op{
 		Key:       args.Key,
+		ShardID:   key2shard(args.Key),
 		OpType:    "Get",
 		From:      kv.me,
 		ResultMsg: ch,
@@ -130,7 +130,9 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	case value := <-ch:
 		reply.Err = OK
 		reply.Value = value
-		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d]", kv.gid, kv.config.Num, kv.me, key2shard(args.Key))
+		kv.mu.Lock()
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Num, kv.me, key2shard(args.Key), args.Key, value)
+		kv.mu.Unlock()
 	case err := <-errCh:
 		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Num, kv.me, err)
 		reply.Err = err
@@ -152,6 +154,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	//封装日志发送给raft
 	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(Op{
+		ShardID:   key2shard(args.Key),
 		Key:       args.Key,
 		Value:     args.Value,
 		OpType:    args.Op,
@@ -174,9 +177,12 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.saveRequestInstance(index, &info)
 	//等待apply()
 	select {
-	case <-ch:
+	case res := <-ch:
 		reply.Err = OK
-		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d]", kv.gid, kv.config.Num, kv.me, key2shard(args.Key))
+		//for debug
+		kv.mu.Lock()
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Num, kv.me, key2shard(args.Key), args.Key, res)
+		kv.mu.Unlock()
 	case err := <-errCh:
 		reply.Err = err
 		Debug(dWarn, "Get: The Err is %v", err)
@@ -251,22 +257,16 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	for i := 0; i < shardctrler.NShards; i++ {
 		kv.storage[i] = make(map[string]string)
 	}
-	kv.duplicatedTable = make(map[int]map[int64]string)
-	for i := 0; i < shardctrler.NShards; i++ {
-		kv.duplicatedTable[i] = make(map[int64]string)
-	}
-	kv.clientTable = make(map[int64]int)
+	kv.duplicatedTable = make(map[int64]LastReply)
 	kv.requestTable = make(map[int]*RequestInfo)
 	kv.shards = make([]State, shardctrler.NShards)
 	kv.clientID = nrand()
 	cfg := kv.mck.Query(0)
 	kv.config = cfg
-	kv.preConfig = cfg
 	kv.readFromSnapshot(kv.persister.ReadSnapshot())
 	go kv.processApply()
 	go kv.processMonitor()
 	go kv.migratingDaemon()
-	go kv.receiveDaemon()
 	return kv
 }
 
@@ -274,91 +274,93 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 func (kv *ShardKV) processApply() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
+		kv.mu.Lock()
 		//需要时刻检测当前是否为leader
 		if msg.TermUpdated {
 			kv.freeMemory()
+			kv.mu.Unlock()
 			continue
 		}
 		if msg.SnapshotValid {
 			if msg.SnapshotIndex <= kv.lastApplied {
 				Debug(dWarn, "the snapshot is duplicated or expired")
+				kv.mu.Unlock()
 				continue
 			}
 			kv.readFromSnapshot(msg.Snapshot)
-			kv.mu.Lock()
 			kv.lastApplied = msg.SnapshotIndex
-			kv.mu.Unlock()
 		}
 		if msg.CommandValid {
 			op := msg.Command.(Op)
-			//Debug(dTrace, "Server %d start to apply the cmd whose index is %d",kv.me, msg.CommandIndex)
 			kv.judgeInstance(op, msg.CommandIndex)
 			if msg.CommandIndex <= kv.lastApplied {
 				Debug(dWarn, "the apply is duplicated or expired")
 				continue
 			}
+			var res string
 			switch op.OpType {
 			case "UpdateConfig":
-				//Debug(dInfo, "Server %d start to updateConfig", kv.me)
 				kv.handleUpdateConfig(op)
-			case "UpdateReceiveState":
-				kv.handleUpdateReceiveState(op)
-				if op.From == kv.me && op.ResultMsg != nil {
-					op.ResultMsg <- ""
-				}
 			case "UpdateMigrateState":
 				kv.handleUpdateMigrateState(op)
+				kv.duplicatedTable[op.ClientID] = LastReply{
+					SequentID: op.SequentID,
+					Value:     res,
+				}
 				if op.From == kv.me && op.ResultMsg != nil {
 					op.ResultMsg <- ""
 				}
 			case "Receive":
 				kv.handleReceive(op)
+				kv.duplicatedTable[op.ClientID] = LastReply{
+					SequentID: op.SequentID,
+					Value:     res,
+				}
 				if op.From == kv.me && op.ResultMsg != nil {
 					op.ResultMsg <- ""
 				}
 			default:
 				//before we execute the command, we need to check the key is whether the server is responsible for
-				shard := key2shard(op.Key)
-				isReady := kv.shards[shard] == Ready
-				if kv.config.Shards[shard] != kv.gid {
+				isReady := kv.shards[op.ShardID] == Ready
+				if kv.config.Shards[op.ShardID] != kv.gid {
 					if op.From == kv.me && op.ErrMsg != nil {
 						op.ErrMsg <- ErrWrongGroup
 					}
 				} else if !isReady {
 					if op.From == kv.me && op.ErrMsg != nil {
-						//Debug(dInfo, "expect receive the shard from %d", )
-						op.ErrMsg <- ErrWrongGroup
+						op.ErrMsg <- ErrShardNotReady
 					}
 				} else {
 					//execute command
-					res := kv.executeCommand(op)
+					res = kv.executeCommand(op)
+					kv.duplicatedTable[op.ClientID] = LastReply{
+						SequentID: op.SequentID,
+						Value:     res,
+					}
 					if op.From == kv.me && op.ResultMsg != nil {
-						Debug(dTrace, "Server %d call the RPC to continue", kv.me)
+						Debug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Num, kv.me)
 						op.ResultMsg <- res
 					}
 				}
-				kv.mu.Lock()
-				kv.lastApplied = msg.CommandIndex
-				kv.mu.Unlock()
-				if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-					kv.persist(kv.lastApplied)
-				}
+			}
+
+			kv.lastApplied = msg.CommandIndex
+			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				kv.persist(kv.lastApplied)
 			}
 		}
+		kv.mu.Unlock()
 	}
 }
 
 func (kv *ShardKV) freeMemory() {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	for key, _ := range kv.requestTable {
 		delete(kv.requestTable, key)
 	}
 }
 
 func (kv *ShardKV) judgeInstance(op Op, index int) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+
 	info, ok := kv.requestTable[index]
 	//if the request is invalid, we need to notify the corresponding client
 	if ok && (info.ClientID != op.ClientID || info.SequentID != op.SequentID) {
@@ -369,16 +371,13 @@ func (kv *ShardKV) judgeInstance(op Op, index int) {
 }
 
 func (kv *ShardKV) executeCommand(op Op) (res string) {
-	preSequentID, ok := kv.clientTable[op.ClientID]
+	lastReply, ok := kv.duplicatedTable[op.ClientID]
 	shard := key2shard(op.Key)
-	if ok && preSequentID == op.SequentID {
-		res = kv.duplicatedTable[shard][op.ClientID]
+	if ok && lastReply.SequentID == op.SequentID {
+		res = kv.duplicatedTable[op.ClientID].Value
 		Debug(dTrace, "[%d] [%d] Server %d find the cmd is duplicated", kv.gid, kv.config.Num, kv.me)
 		return
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	kv.clientTable[op.ClientID] = op.SequentID
 	switch op.OpType {
 	case "Get":
 		res = kv.storage[shard][op.Key]
@@ -390,7 +389,6 @@ func (kv *ShardKV) executeCommand(op Op) (res string) {
 		kv.storage[shard][op.Key] = val + op.Value
 		res = kv.storage[shard][op.Key]
 	}
-	kv.duplicatedTable[shard][op.ClientID] = res
 	Debug(dTrace, "Server %d apply the cmd whose clientID is %d, and sequentID is %d", kv.me, op.ClientID, op.SequentID)
 	return
 }

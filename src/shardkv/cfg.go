@@ -34,15 +34,12 @@ func (kv *ShardKV) processMonitor() {
 }
 
 func (kv *ShardKV) handleUpdateConfig(op Op) {
-	kv.mu.Lock()
 	if kv.config.Num+1 != op.Version {
 		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d find that the version is not next one", kv.gid, kv.config.Num, kv.me)
-		kv.mu.Unlock()
 		return
 	}
 	if !kv.isAllUpdated() {
 		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d is waiting for all shards to be updated", kv.gid, kv.config.Num, kv.me)
-		kv.mu.Unlock()
 		return
 	}
 
@@ -53,10 +50,9 @@ func (kv *ShardKV) handleUpdateConfig(op Op) {
 			kv.shards[shard] = WaitingReceived
 		}
 	}
-	kv.preConfig = kv.config
 	kv.config = *op.NewConfig
 	Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d update the config to %v", kv.gid, kv.config.Num, kv.me, kv.config)
-	kv.mu.Unlock()
+
 }
 
 // check whether all shards are updated
@@ -64,7 +60,6 @@ func (kv *ShardKV) handleUpdateConfig(op Op) {
 func (kv *ShardKV) isAllUpdated() bool {
 	for _, state := range kv.shards {
 		if state == WaitingMigrated || state == WaitingReceived {
-
 			return false
 		}
 	}

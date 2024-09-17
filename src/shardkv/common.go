@@ -62,6 +62,11 @@ type PutAppendArgs struct {
 	SequentID int
 }
 
+type LastReply struct {
+	SequentID int
+	Value     string
+}
+
 type PutAppendReply struct {
 	Err Err
 }
@@ -78,37 +83,12 @@ type GetReply struct {
 	Value string
 }
 
-// ShardInfo use for key to grantee the uniqueness
-type ShardInfo struct {
-	ShardID int
-	Version int
-}
-
-type ShardMigrationInfo struct {
-	Args    *ShardMigrationArgs
-	Servers []string
-}
-
-type ShardMigrationArgs struct {
-	ShardID         int
-	Num             int
-	Storage         map[string]string
-	DuplicatedTable map[DuplicatedKey]string
-	ClientID        int64
-	SequentID       int
-	From            int
-}
-
-type ShardMigrationReply struct {
-	Success bool
-}
-
 // migrating
 type MigrationArgs struct {
 	ShardID         int
 	Version         int
 	Data            map[string]string
-	DuplicatedTable map[int64]string
+	DuplicatedTable map[int64]LastReply
 	ClientID        int64
 	SequentID       int
 }
@@ -128,5 +108,5 @@ type ReceiveArgs struct {
 type ReceiveReply struct {
 	Success         bool
 	Data            map[string]string
-	DuplicatedTable map[int64]string
+	DuplicatedTable map[int64]LastReply
 }
