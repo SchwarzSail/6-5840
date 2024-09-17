@@ -30,10 +30,9 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
-
-func(cfg *Config) clone() *Config {
+func (cfg *Config) clone() *Config {
 	res := &Config{
-		Num: cfg.Num,
+		Num:    cfg.Num,
 		Groups: make(map[int][]string),
 	}
 	copy(res.Shards[:], cfg.Shards[:])
@@ -48,11 +47,11 @@ func(cfg *Config) clone() *Config {
 const RPCTimeout = 5000 * time.Millisecond
 
 const (
-	OK = "OK"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK              = "OK"
+	ErrWrongLeader  = "ErrWrongLeader"
 	ErrWrongRequest = "ErrWrongRequest"
-	ErrExpireReq = "ErrExpiredReq"
-	ErrRPCTimeout = "ErrRPCTimeout"
+	ErrExpireReq    = "ErrExpiredReq"
+	ErrRPCTimeout   = "ErrRPCTimeout"
 )
 
 const (
@@ -108,4 +107,9 @@ type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+type LastReply struct {
+	SequentID int
+	Value     Config
 }

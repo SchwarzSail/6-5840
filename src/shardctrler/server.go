@@ -21,15 +21,14 @@ type ShardCtrler struct {
 	dead            int32
 	configs         []Config // indexed by config num
 	requestTable    map[int]*RequestInfo
-	duplicatedTable map[int64]*Config
-	clientTable     map[int64]int
+	duplicatedTable map[int64]LastReply
 	lastApplied     int
 }
 
 type Op struct {
 	// Your data here.
 	OpType        string
-	ResultChannel chan *Config
+	ResultChannel chan Config
 	From          int
 	Args          interface{}
 }
@@ -77,22 +76,23 @@ func (sc *ShardCtrler) preProcessRequest(clientID int64, sequentID int, err *Err
 	}
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	if preSequentID, ok := sc.clientTable[clientID]; ok {
-		if preSequentID == sequentID {
-			*err = OK
-			if value != nil {
-				value = sc.duplicatedTable[clientID]
-			}
-			Debug(dInfo, "--Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID, sequentID)
-			return false
-		} else if preSequentID > sequentID {
-			*err = ErrExpireReq
-			return false
-		} else {
-			return true
-		}
+	lastReply, ok := sc.duplicatedTable[clientID]
+	if !ok {
+		return true
 	}
-	return true
+	switch {
+	case lastReply.SequentID == sequentID:
+		*err = OK
+		if value != nil {
+			*value = sc.duplicatedTable[clientID].Value
+		}
+		return true
+	case lastReply.SequentID > sequentID:
+		*err = ErrExpireReq
+		return false
+	default:
+		return true
+	}
 }
 
 func (sc *ShardCtrler) saveRequestInstance(index int, req *RequestInfo) {
@@ -104,11 +104,13 @@ func (sc *ShardCtrler) saveRequestInstance(index int, req *RequestInfo) {
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
-		reply.WrongLeader = true
+		if reply.Err == ErrWrongLeader {
+			reply.WrongLeader = true
+		}
 		Debug(dTrace, "Join operation is invalid")
 		return
 	}
-	ch := make(chan *Config)
+	ch := make(chan Config)
 	errCh := make(chan Err)
 	index, _, isLeader := sc.rf.Start(Op{
 		OpType:        "Join",
@@ -144,11 +146,13 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
-		reply.WrongLeader = true
+		if reply.Err == ErrWrongLeader {
+			reply.WrongLeader = true
+		}
 		Debug(dTrace, "Leave operation is invalid")
 		return
 	}
-	ch := make(chan *Config)
+	ch := make(chan Config)
 	errCh := make(chan Err)
 	index, _, isLeader := sc.rf.Start(Op{
 		OpType:        "Leave",
@@ -184,11 +188,13 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 	if ok := sc.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
-		reply.WrongLeader = true
+		if reply.Err == ErrWrongLeader {
+			reply.WrongLeader = true
+		}
 		Debug(dTrace, "Move operation is invalid")
 		return
 	}
-	ch := make(chan *Config)
+	ch := make(chan Config)
 	errCh := make(chan Err)
 	index, _, isLeader := sc.rf.Start(Op{
 		OpType:        "Move",
@@ -232,7 +238,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		reply.WrongLeader = true
 		return
 	}
-	ch := make(chan *Config)
+	ch := make(chan Config)
 	errCh := make(chan Err)
 	index, _, isLeader := sc.rf.Start(Op{
 		OpType:        "Query",
@@ -254,7 +260,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 
 	select {
 	case value := <-ch:
-		reply.Config = *value
+		reply.Config = value
 		reply.Err = OK
 		return
 	case err := <-errCh:
@@ -306,8 +312,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	// Your code here.
 	sc.requestTable = make(map[int]*RequestInfo)
-	sc.duplicatedTable = make(map[int64]*Config)
-	sc.clientTable = make(map[int64]int)
+	sc.duplicatedTable = make(map[int64]LastReply)
 	sc.lastApplied = 0
 
 	go sc.apply()
@@ -359,12 +364,12 @@ func (sc *ShardCtrler) judgeInstance(op Op, index int) {
 	delete(sc.requestTable, index)
 }
 
-func (sc *ShardCtrler) executeCommand(op Op) (res *Config) {
+func (sc *ShardCtrler) executeCommand(op Op) (res Config) {
 	//judge the duplicated command
-	preSequentID, ok := sc.clientTable[op.GetClientID()]
-	if ok && preSequentID == op.GetSequentID() {
+	lastReply, ok := sc.duplicatedTable[op.GetClientID()]
+	if ok && lastReply.SequentID == op.GetSequentID() {
 		Debug(dInfo, "Server %d find that the request is duplicated whose ClientID is %d, SequentID is %d", sc.me, op.GetClientID(), op.GetSequentID())
-		res = sc.duplicatedTable[op.GetClientID()]
+		res = sc.duplicatedTable[op.GetClientID()].Value
 		return
 	}
 	sc.mu.Lock()
@@ -377,10 +382,12 @@ func (sc *ShardCtrler) executeCommand(op Op) (res *Config) {
 	case "Move":
 		sc.move(op.Args.(*MoveArgs))
 	case "Query":
-		res = sc.query(op.Args.(*QueryArgs))
+		res = *sc.query(op.Args.(*QueryArgs))
 	}
-	sc.clientTable[op.GetClientID()] = op.GetSequentID()
-	sc.duplicatedTable[op.GetClientID()] = res
+	sc.duplicatedTable[op.GetClientID()] = LastReply{
+		SequentID: op.GetSequentID(),
+		Value:     res,
+	}
 	return
 }
 
