@@ -8,7 +8,8 @@ import (
 )
 
 func (kv *ShardKV) persist(index int) {
-
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	cfg := kv.config.Load()
@@ -43,7 +44,8 @@ func (kv *ShardKV) readFromSnapshot(data []byte) {
 	if err := d.Decode(&cfg); err != nil {
 		panic(err)
 	}
-
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	kv.storage = storage
 	kv.duplicatedTable = duplicatedTable
 	kv.shards = shards

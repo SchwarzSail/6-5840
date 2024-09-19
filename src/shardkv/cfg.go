@@ -15,6 +15,7 @@ func (kv *ShardKV) processMonitor() {
 		currentCfg := kv.config.Load()
 		if !kv.isAllUpdated() {
 			Debug(dInfo, "processMonitor: [%d] [%d] Server %d is waiting for all shards to be updated, shards %v", kv.gid, currentCfg.Num, kv.me, kv.shards)
+		Debug(dTrace, "[%d] [%d] Server %d current config is %v",kv.gid, currentCfg.Num,kv.me,currentCfg)
 			kv.mu.Unlock()
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -34,6 +35,8 @@ func (kv *ShardKV) processMonitor() {
 }
 
 func (kv *ShardKV) handleUpdateConfig(op Op) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	currentConfig := kv.config.Load()
 	if currentConfig.Num+1 != op.Version {
 		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d find that the version is not next one", kv.gid, currentConfig.Num, kv.me)
@@ -41,6 +44,7 @@ func (kv *ShardKV) handleUpdateConfig(op Op) {
 	}
 	if !kv.isAllUpdated() {
 		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d is waiting for all shards to be updated", kv.gid, currentConfig.Num, kv.me)
+		Debug(dTrace, "[%d] [%d] Server %d current config is %v",kv.gid, currentConfig.Num,kv.me,currentConfig)
 		return
 	}
 

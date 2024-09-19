@@ -34,6 +34,15 @@ type AppendEntriesReply struct {
 	//log length
 }
 
+
+func(rf *Raft) GetLastLogTerm() int {
+	if len(rf.log) == 1 {
+		//get from snapshot
+		return rf.log[0].Term
+	}
+	return rf.log[len(rf.log)-1].Term
+}
+
 func (rf *Raft) lastLogIndex() int {
 	//因为含有哨兵结点，所以需要-1
 	return rf.lastIncludedIndex + len(rf.log) - 1

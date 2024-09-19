@@ -2,6 +2,8 @@ package shardkv
 
 import (
 	"time"
+
+
 )
 
 func DeepCopyStorageMap(src map[string]string) map[string]string {
@@ -76,6 +78,7 @@ func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int
 	if ok && reply.Success {
 		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s success", kv.gid, kv.config.Load().Num, kv.me, shard, server)
 		kv.mu.Lock()
+
 		//make the consensus
 		ch := make(chan string)
 		ErrCh := make(chan Err)
@@ -85,7 +88,7 @@ func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int
 			SequentID: kv.sequentID,
 			ResultMsg: ch,
 			ShardID:   shard,
-			Version:   args.Version,
+			Version:   kv.config.Load().Num,
 			ErrMsg:    ErrCh,
 		})
 		if !isLeader {
@@ -113,15 +116,23 @@ func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int
 
 // MigrateShards other send shards to current server
 func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		return
+	}
 	//check the version
 	kv.mu.Lock()
-	if kv.config.Load().Num < args.Version {
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d has  smaller version %v", kv.gid, kv.config.Load().Num, kv.me, args.Version)
+	currentConfig := kv.config.Load()
+	if currentConfig.Num < args.Version {
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d has  smaller version %v", kv.gid, currentConfig.Num, kv.me, args.Version)
 		reply.Success = false
 		kv.mu.Unlock()
 		return
 	}
-
+	if kv.shards[args.ShardID] == Ready {
+		reply.Success = true
+		kv.mu.Unlock()
+		return
+	}
 	//make the consensus
 	ch := make(chan string)
 	ErrCh := make(chan Err)
@@ -133,12 +144,12 @@ func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
 		ClientID:        args.ClientID,
 		SequentID:       args.SequentID,
 		Data:            args.Data,
-		Version:         kv.config.Load().Num,
+		Version:         currentConfig.Num,
 		ShardID:         args.ShardID,
 		DuplicatedTable: args.DuplicatedTable,
 	})
 	if !isLeader {
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d is not leader", kv.gid, kv.config.Load().Num, kv.me)
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d is not leader", kv.gid, currentConfig.Num, kv.me)
 		reply.Success = false
 		kv.mu.Unlock()
 		return
@@ -163,9 +174,14 @@ func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
 }
 
 func (kv *ShardKV) handleUpdateMigrateState(op Op) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	currentConfig := kv.config.Load()
 	if currentConfig.Num > op.Version || currentConfig.Num < op.Version {
 		Debug(dInfo, "handleUpdateMigrateState: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, currentConfig.Num, kv.me, op.Version)
+		if op.ErrMsg != nil {
+			op.ErrMsg <- ErrWrongVersion
+		}
 		return
 	}
 	if kv.shards[op.ShardID] == WaitingMigrated {
@@ -175,10 +191,18 @@ func (kv *ShardKV) handleUpdateMigrateState(op Op) {
 }
 
 func (kv *ShardKV) handleReceive(op Op) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	currentConfig := kv.config.Load()
-
+	
 	if currentConfig.Num > op.Version || currentConfig.Num < op.Version {
 		Debug(dInfo, "handleReceive: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, currentConfig.Num, kv.me, op.Version)
+		if op.ErrMsg != nil {
+			op.ErrMsg <- ErrWrongVersion
+		}
+		return
+	}
+	if kv.shards[op.ShardID] == Ready {
 		return
 	}
 	if kv.shards[op.ShardID] == WaitingReceived {
@@ -193,5 +217,6 @@ func (kv *ShardKV) handleReceive(op Op) {
 		kv.shards[op.ShardID] = Ready
 		Debug(dInfo, "handleReceive: [%d] [%d] Server %d receive shard %d success", kv.gid, kv.config.Load().Num, kv.me, op.ShardID)
 		Debug(dInfo, "handleReceive: [%d] [%d] Server %d shards' %v", kv.gid, kv.config.Load().Num, kv.me, kv.shards)
+		
 	}
 }

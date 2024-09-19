@@ -137,7 +137,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
 		reply.Err = err
 	case <-time.After(RPCTimeout):
-		Debug(dWarn, "[%d] [%d] Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.gid, kv.config.Load().Num, kv.me, args.ClientID, args.SequentID)
+		Debug(dWarn, "Get: [%d] [%d] Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.gid, kv.config.Load().Num, kv.me, args.ClientID, args.SequentID)
 		reply.Err = ErrRPCTimeout
 	}
 
@@ -185,9 +185,9 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.mu.Unlock()
 	case err := <-errCh:
 		reply.Err = err
-		Debug(dWarn, "Get: The Err is %v", err)
+		Debug(dWarn, "PutAppend: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
 	case <-time.After(RPCTimeout):
-		Debug(dWarn, "Server %d find that the PutAppend RPC is timeout, and ClientID is %d, SequentID is %d", kv.me, args.ClientID, args.SequentID)
+		Debug(dWarn, "PutAppend: [%d] [%d] Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.gid, kv.config.Load().Num, kv.me, args.ClientID, args.SequentID)
 		reply.Err = ErrRPCTimeout
 	}
 }
@@ -262,11 +262,13 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.shards = make([]State, shardctrler.NShards)
 	kv.clientID = nrand()
 	cfg := kv.mck.Query(0)
+	
 	kv.config.Store(&cfg)
 	kv.readFromSnapshot(kv.persister.ReadSnapshot())
 	go kv.processApply()
 	go kv.processMonitor()
 	go kv.migratingDaemon()
+	//go kv.checkLastTermDeamon()
 	return kv
 }
 
@@ -274,21 +276,20 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 func (kv *ShardKV) processApply() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
-		kv.mu.Lock()
-		//需要时刻检测当前是否为leader
+		//check that the term isn't changed
 		if msg.TermUpdated {
 			kv.freeMemory()
-			kv.mu.Unlock()
 			continue
 		}
 		if msg.SnapshotValid {
 			if msg.SnapshotIndex <= kv.lastApplied {
 				Debug(dWarn, "the snapshot is duplicated or expired")
-				kv.mu.Unlock()
 				continue
 			}
 			kv.readFromSnapshot(msg.Snapshot)
+			kv.mu.Lock()
 			kv.lastApplied = msg.SnapshotIndex
+			kv.mu.Unlock()
 		}
 		if msg.CommandValid {
 			op := msg.Command.(Op)
@@ -299,23 +300,16 @@ func (kv *ShardKV) processApply() {
 			}
 			var res string
 			switch op.OpType {
+			case "Nothing":
 			case "UpdateConfig":
 				kv.handleUpdateConfig(op)
 			case "UpdateMigrateState":
 				kv.handleUpdateMigrateState(op)
-				kv.duplicatedTable[op.ClientID] = LastReply{
-					SequentID: op.SequentID,
-					Value:     res,
-				}
 				if op.From == kv.me && op.ResultMsg != nil {
 					op.ResultMsg <- ""
 				}
 			case "Receive":
 				kv.handleReceive(op)
-				kv.duplicatedTable[op.ClientID] = LastReply{
-					SequentID: op.SequentID,
-					Value:     res,
-				}
 				if op.From == kv.me && op.ResultMsg != nil {
 					op.ResultMsg <- ""
 				}
@@ -333,34 +327,40 @@ func (kv *ShardKV) processApply() {
 				} else {
 					//execute command
 					res = kv.executeCommand(op)
+					kv.mu.Lock()
 					kv.duplicatedTable[op.ClientID] = LastReply{
 						SequentID: op.SequentID,
 						Value:     res,
 					}
+					kv.mu.Unlock()
 					if op.From == kv.me && op.ResultMsg != nil {
 						Debug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Load().Num, kv.me)
 						op.ResultMsg <- res
 					}
 				}
 			}
-
+			kv.mu.Lock()
 			kv.lastApplied = msg.CommandIndex
+			kv.mu.Unlock()
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				kv.persist(kv.lastApplied)
 			}
 		}
-		kv.mu.Unlock()
+		
 	}
 }
 
 func (kv *ShardKV) freeMemory() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	for key, _ := range kv.requestTable {
 		delete(kv.requestTable, key)
 	}
 }
 
 func (kv *ShardKV) judgeInstance(op Op, index int) {
-
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	info, ok := kv.requestTable[index]
 	//if the request is invalid, we need to notify the corresponding client
 	if ok && (info.ClientID != op.ClientID || info.SequentID != op.SequentID) {
@@ -371,6 +371,8 @@ func (kv *ShardKV) judgeInstance(op Op, index int) {
 }
 
 func (kv *ShardKV) executeCommand(op Op) (res string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	lastReply, ok := kv.duplicatedTable[op.ClientID]
 	shard := key2shard(op.Key)
 	if ok && lastReply.SequentID == op.SequentID {
@@ -389,6 +391,24 @@ func (kv *ShardKV) executeCommand(op Op) (res string) {
 		kv.storage[shard][op.Key] = val + op.Value
 		res = kv.storage[shard][op.Key]
 	}
-	Debug(dTrace, "Server %d apply the cmd whose clientID is %d, and sequentID is %d", kv.me, op.ClientID, op.SequentID)
+	Debug(dTrace, "[%d] [%d] Server %d apply the cmd whose clientID is %d, and sequentID is %d",kv.gid, kv.config.Load().Num, kv.me, op.ClientID, op.SequentID)
 	return
+}
+
+
+func(kv *ShardKV) checkLastTermDeamon() {
+	for kv.killed() {
+		currentTerm, isLeader := kv.rf.GetState() 
+		if !isLeader {
+			time.Sleep(100 *time.Millisecond)
+			continue
+		}
+		lastLogTerm := kv.rf.GetLastLogTerm()
+		if lastLogTerm != currentTerm {
+			kv.rf.Start(Op{
+				OpType: "Nothing",
+			})
+		}
+		time.Sleep(100 *time.Millisecond)
+	}
 }
