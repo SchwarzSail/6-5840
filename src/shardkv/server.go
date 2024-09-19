@@ -26,7 +26,7 @@ type Op struct {
 	SequentID       int
 	ShardID         int
 	Version         int
-	NewConfig       *shardctrler.Config
+	NewConfig       shardctrler.Config
 	Data            map[string]string
 	DuplicatedTable map[int64]LastReply
 }
@@ -53,7 +53,7 @@ type ShardKV struct {
 	sequentID int
 
 	mck    *shardctrler.Clerk
-	config shardctrler.Config
+	config atomic.Pointer[shardctrler.Config]
 	//shard
 	shards []State //record the shard state that current server is responsible for
 	//config
@@ -81,7 +81,7 @@ func (kv *ShardKV) preProcessRequest(key string, clientID int64, sequentID int, 
 		return false
 	case lastReply.SequentID > sequentID:
 		*err = ErrExpireReq
-		Debug(dTrace, "[%d] [%d] server %d find that the request %d %d is expired", kv.gid, kv.config.Num, kv.me, clientID, sequentID)
+		Debug(dTrace, "[%d] [%d] server %d find that the request %d %d is expired", kv.gid, kv.config.Load().Num, kv.me, clientID, sequentID)
 		return false
 	default:
 		return true
@@ -131,13 +131,13 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = OK
 		reply.Value = value
 		kv.mu.Lock()
-		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Num, kv.me, key2shard(args.Key), args.Key, value)
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, value)
 		kv.mu.Unlock()
 	case err := <-errCh:
-		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Num, kv.me, err)
+		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
 		reply.Err = err
 	case <-time.After(RPCTimeout):
-		Debug(dWarn, "[%d] [%d] Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.gid, kv.config.Num, kv.me, args.ClientID, args.SequentID)
+		Debug(dWarn, "[%d] [%d] Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.gid, kv.config.Load().Num, kv.me, args.ClientID, args.SequentID)
 		reply.Err = ErrRPCTimeout
 	}
 
@@ -181,7 +181,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = OK
 		//for debug
 		kv.mu.Lock()
-		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Num, kv.me, key2shard(args.Key), args.Key, res)
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, res)
 		kv.mu.Unlock()
 	case err := <-errCh:
 		reply.Err = err
@@ -262,7 +262,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.shards = make([]State, shardctrler.NShards)
 	kv.clientID = nrand()
 	cfg := kv.mck.Query(0)
-	kv.config = cfg
+	kv.config.Store(&cfg)
 	kv.readFromSnapshot(kv.persister.ReadSnapshot())
 	go kv.processApply()
 	go kv.processMonitor()
@@ -322,7 +322,7 @@ func (kv *ShardKV) processApply() {
 			default:
 				//before we execute the command, we need to check the key is whether the server is responsible for
 				isReady := kv.shards[op.ShardID] == Ready
-				if kv.config.Shards[op.ShardID] != kv.gid {
+				if kv.config.Load().Shards[op.ShardID] != kv.gid {
 					if op.From == kv.me && op.ErrMsg != nil {
 						op.ErrMsg <- ErrWrongGroup
 					}
@@ -338,7 +338,7 @@ func (kv *ShardKV) processApply() {
 						Value:     res,
 					}
 					if op.From == kv.me && op.ResultMsg != nil {
-						Debug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Num, kv.me)
+						Debug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Load().Num, kv.me)
 						op.ResultMsg <- res
 					}
 				}
@@ -375,7 +375,7 @@ func (kv *ShardKV) executeCommand(op Op) (res string) {
 	shard := key2shard(op.Key)
 	if ok && lastReply.SequentID == op.SequentID {
 		res = kv.duplicatedTable[op.ClientID].Value
-		Debug(dTrace, "[%d] [%d] Server %d find the cmd is duplicated", kv.gid, kv.config.Num, kv.me)
+		Debug(dTrace, "[%d] [%d] Server %d find the cmd is duplicated", kv.gid, kv.config.Load().Num, kv.me)
 		return
 	}
 	switch op.OpType {

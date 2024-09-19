@@ -38,7 +38,7 @@ func (kv *ShardKV) migratingDaemon() {
 			}
 		}
 		if len(shardToBeMigrated) != 0 {
-			Debug(dInfo, "migratingDaemon: [%d] [%d] Leader %d is migrating shards %v", kv.gid, kv.config.Num, kv.me, shardToBeMigrated)
+			Debug(dInfo, "migratingDaemon: [%d] [%d] Leader %d is migrating shards %v", kv.gid, kv.config.Load().Num, kv.me, shardToBeMigrated)
 			kv.migrating(shardToBeMigrated)
 		}
 		kv.mu.Unlock()
@@ -52,7 +52,7 @@ func (kv *ShardKV) migrating(shards []int) {
 		//prepare args
 		args := &MigrationArgs{
 			ShardID:         shard,
-			Version:         kv.config.Num,
+			Version:         kv.config.Load().Num,
 			Data:            make(map[string]string),
 			DuplicatedTable: make(map[int64]LastReply),
 			ClientID:        kv.clientID,
@@ -62,8 +62,8 @@ func (kv *ShardKV) migrating(shards []int) {
 		args.Data = DeepCopyStorageMap(kv.storage[shard])
 		args.DuplicatedTable = DeepCopyDuplicatedTableMap(kv.duplicatedTable)
 		//Call RPCs
-		Debug(dTrace, "migrating: [%d] [%d] Leader %d: the config  Group is %v", kv.gid, kv.config.Num, kv.me, kv.config.Groups[kv.config.Shards[shard]])
-		for _, server := range kv.config.Groups[kv.config.Shards[shard]] {
+		Debug(dTrace, "migrating: [%d] [%d] Leader %d: the config  Group is %v", kv.gid, kv.config.Load().Num, kv.me, kv.config.Load().Groups[kv.config.Load().Shards[shard]])
+		for _, server := range kv.config.Load().Groups[kv.config.Load().Shards[shard]] {
 			go kv.handleMigrating(server, args, shard)
 		}
 	}
@@ -74,7 +74,7 @@ func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int
 	srv := kv.make_end(server)
 	ok := srv.Call("ShardKV.MigrateShards", args, &reply)
 	if ok && reply.Success {
-		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s success", kv.gid, kv.config.Num, kv.me, shard, server)
+		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s success", kv.gid, kv.config.Load().Num, kv.me, shard, server)
 		kv.mu.Lock()
 		//make the consensus
 		ch := make(chan string)
@@ -100,14 +100,14 @@ func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int
 		kv.mu.Unlock()
 		select {
 		case <-ch:
-			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d success make the consensus", kv.gid, kv.config.Num, kv.me)
+			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d success make the consensus", kv.gid, kv.config.Load().Num, kv.me)
 		case err := <-ErrCh:
-			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d failed make the consensus %v", kv.gid, kv.config.Num, kv.me, err)
+			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d failed make the consensus %v", kv.gid, kv.config.Load().Num, kv.me, err)
 		case <-time.After(RPCTimeout):
-			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d timeout make the consensus", kv.gid, kv.config.Num, kv.me)
+			Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d timeout make the consensus", kv.gid, kv.config.Load().Num, kv.me)
 		}
 	} else {
-		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s failed", kv.gid, kv.config.Num, kv.me, shard, server)
+		Debug(dInfo, "handleMigrating: [%d] [%d] Leader %d migrate shard %d to %s failed", kv.gid, kv.config.Load().Num, kv.me, shard, server)
 	}
 }
 
@@ -115,19 +115,13 @@ func (kv *ShardKV) handleMigrating(server string, args *MigrationArgs, shard int
 func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
 	//check the version
 	kv.mu.Lock()
-	if kv.config.Num < args.Version {
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d has  smaller version %v", kv.gid, kv.config.Num, kv.me, args.Version)
+	if kv.config.Load().Num < args.Version {
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d has  smaller version %v", kv.gid, kv.config.Load().Num, kv.me, args.Version)
 		reply.Success = false
 		kv.mu.Unlock()
 		return
 	}
 
-	if kv.shards[args.ShardID] == Ready {
-		Debug(dInfo, "---MigrateShards: [%d] [%d] Server %d has received the shard %d", kv.gid, kv.config.Num, kv.me, args.ShardID)
-		reply.Success = true
-		kv.mu.Unlock()
-		return
-	}
 	//make the consensus
 	ch := make(chan string)
 	ErrCh := make(chan Err)
@@ -139,12 +133,12 @@ func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
 		ClientID:        args.ClientID,
 		SequentID:       args.SequentID,
 		Data:            args.Data,
-		Version:         kv.config.Num,
+		Version:         kv.config.Load().Num,
 		ShardID:         args.ShardID,
 		DuplicatedTable: args.DuplicatedTable,
 	})
 	if !isLeader {
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d is not leader", kv.gid, kv.config.Num, kv.me)
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d is not leader", kv.gid, kv.config.Load().Num, kv.me)
 		reply.Success = false
 		kv.mu.Unlock()
 		return
@@ -159,18 +153,19 @@ func (kv *ShardKV) MigrateShards(args *MigrationArgs, reply *MigrationReply) {
 	select {
 	case <-ch:
 		reply.Success = true
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d success make the consensus", kv.gid, kv.config.Num, kv.me)
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d success make the consensus", kv.gid, kv.config.Load().Num, kv.me)
 	case err := <-ErrCh:
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d failed make the consensus %v", kv.gid, kv.config.Num, kv.me, err)
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d failed make the consensus %v", kv.gid, kv.config.Load().Num, kv.me, err)
 	case <-time.After(RPCTimeout):
-		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d timeout make the consensus", kv.gid, kv.config.Num, kv.me)
+		Debug(dInfo, "MigrateShards: [%d] [%d] Server %d timeout make the consensus", kv.gid, kv.config.Load().Num, kv.me)
 	}
 
 }
 
 func (kv *ShardKV) handleUpdateMigrateState(op Op) {
-	if kv.config.Num > op.Version || kv.config.Num < op.Version {
-		Debug(dInfo, "handleUpdateMigrateState: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, kv.config.Num, kv.me, op.Version)
+	currentConfig := kv.config.Load()
+	if currentConfig.Num > op.Version || currentConfig.Num < op.Version {
+		Debug(dInfo, "handleUpdateMigrateState: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, currentConfig.Num, kv.me, op.Version)
 		return
 	}
 	if kv.shards[op.ShardID] == WaitingMigrated {
@@ -180,8 +175,10 @@ func (kv *ShardKV) handleUpdateMigrateState(op Op) {
 }
 
 func (kv *ShardKV) handleReceive(op Op) {
-	if kv.config.Num > op.Version || kv.config.Num < op.Version {
-		Debug(dInfo, "handleReceive: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, kv.config.Num, kv.me, op.Version)
+	currentConfig := kv.config.Load()
+
+	if currentConfig.Num > op.Version || currentConfig.Num < op.Version {
+		Debug(dInfo, "handleReceive: [%d] [%d] Server %d has higher or smaller version %v", kv.gid, currentConfig.Num, kv.me, op.Version)
 		return
 	}
 	if kv.shards[op.ShardID] == WaitingReceived {
@@ -194,7 +191,7 @@ func (kv *ShardKV) handleReceive(op Op) {
 			}
 		}
 		kv.shards[op.ShardID] = Ready
-		Debug(dInfo, "handleReceive: [%d] [%d] Server %d receive shard %d success", kv.gid, kv.config.Num, kv.me, op.ShardID)
-		Debug(dInfo, "handleReceive: [%d] [%d] Server %d shards' %v", kv.gid, kv.config.Num, kv.me, kv.shards)
+		Debug(dInfo, "handleReceive: [%d] [%d] Server %d receive shard %d success", kv.gid, kv.config.Load().Num, kv.me, op.ShardID)
+		Debug(dInfo, "handleReceive: [%d] [%d] Server %d shards' %v", kv.gid, kv.config.Load().Num, kv.me, kv.shards)
 	}
 }

@@ -11,8 +11,9 @@ func (kv *ShardKV) persist(index int) {
 
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	if e.Encode(&kv.duplicatedTable) != nil || e.Encode(&kv.storage) != nil || e.Encode(&kv.shards) != nil || e.Encode(&kv.config) != nil {
-		panic(fmt.Sprintf("[%d] [%d] Server %d failed to encode the statement", kv.gid, kv.config.Num, kv.me))
+	cfg := kv.config.Load()
+	if e.Encode(&kv.duplicatedTable) != nil || e.Encode(&kv.storage) != nil || e.Encode(&kv.shards) != nil || e.Encode(&cfg) != nil {
+		panic(fmt.Sprintf("[%d] [%d] Server %d failed to encode the statement", kv.gid, kv.config.Load().Num, kv.me))
 	}
 
 	raftstate := w.Bytes()
@@ -29,7 +30,7 @@ func (kv *ShardKV) readFromSnapshot(data []byte) {
 	var duplicatedTable map[int64]LastReply
 
 	var shards []State
-	var cfg shardctrler.Config
+	var cfg *shardctrler.Config
 	if err := d.Decode(&duplicatedTable); err != nil {
 		panic(err)
 	}
@@ -46,6 +47,6 @@ func (kv *ShardKV) readFromSnapshot(data []byte) {
 	kv.storage = storage
 	kv.duplicatedTable = duplicatedTable
 	kv.shards = shards
-	kv.config = cfg
+	kv.config.Store(cfg)
 	Debug(dSnap, "Server read snapshot success")
 }

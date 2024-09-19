@@ -12,20 +12,20 @@ func (kv *ShardKV) processMonitor() {
 			continue
 		}
 		kv.mu.Lock()
+		currentCfg := kv.config.Load()
 		if !kv.isAllUpdated() {
-			Debug(dInfo, "processMonitor: [%d] [%d] Server %d is waiting for all shards to be updated, shards %v", kv.gid, kv.config.Num, kv.me, kv.shards)
+			Debug(dInfo, "processMonitor: [%d] [%d] Server %d is waiting for all shards to be updated, shards %v", kv.gid, currentCfg.Num, kv.me, kv.shards)
 			kv.mu.Unlock()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		currentCfg := kv.config
 		kv.mu.Unlock()
 		newConfig := kv.mck.Query(currentCfg.Num + 1)
 		if currentCfg.Num+1 == newConfig.Num {
 			Debug(dInfo, "processMonitor: [%d] [%d] Leader %d find the new config %v", kv.gid, currentCfg.Num, kv.me, newConfig)
 			kv.rf.Start(Op{
 				OpType:    "UpdateConfig",
-				NewConfig: &newConfig,
+				NewConfig: newConfig,
 				Version:   newConfig.Num,
 			})
 		}
@@ -34,12 +34,13 @@ func (kv *ShardKV) processMonitor() {
 }
 
 func (kv *ShardKV) handleUpdateConfig(op Op) {
-	if kv.config.Num+1 != op.Version {
-		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d find that the version is not next one", kv.gid, kv.config.Num, kv.me)
+	currentConfig := kv.config.Load()
+	if currentConfig.Num+1 != op.Version {
+		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d find that the version is not next one", kv.gid, currentConfig.Num, kv.me)
 		return
 	}
 	if !kv.isAllUpdated() {
-		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d is waiting for all shards to be updated", kv.gid, kv.config.Num, kv.me)
+		Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d is waiting for all shards to be updated", kv.gid, currentConfig.Num, kv.me)
 		return
 	}
 
@@ -50,8 +51,8 @@ func (kv *ShardKV) handleUpdateConfig(op Op) {
 			kv.shards[shard] = WaitingReceived
 		}
 	}
-	kv.config = *op.NewConfig
-	Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d update the config to %v", kv.gid, kv.config.Num, kv.me, kv.config)
+	kv.config.Store(&op.NewConfig)
+	Debug(dInfo, "handleUpdateConfig: [%d] [%d] Server %d update the config to %v", kv.gid, op.NewConfig.Num, kv.me, op.NewConfig)
 
 }
 
