@@ -24,7 +24,7 @@ const (
 	ErrWrongRequest    = "ErrWrongRequest"
 	ErrShardNotReady   = "ErrShardNotReady"
 	ErrVersionNotMatch = "ErrVersionNotMatch"
-	ErrWrongVersion = "ErrWrongVersion"
+	ErrWrongVersion    = "ErrWrongVersion"
 )
 
 const RPCTimeout = 5000 * time.Millisecond
@@ -43,8 +43,9 @@ const (
 type RequestInfo struct {
 	ClientID  int64
 	SequentID int
+	ErrMsg    chan Err
+	Result    chan string
 }
-
 
 // Put or Append
 type PutAppendArgs struct {
@@ -109,8 +110,8 @@ type ReceiveReply struct {
 }
 
 type ShardsCacheData struct {
-	Data map[string]string
+	Data            map[string]string
 	DuplicatedTable map[int64]LastReply
-	ShardID int
-	Version int
+	ShardID         int
+	Version         int
 }

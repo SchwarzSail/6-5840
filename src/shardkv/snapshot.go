@@ -22,6 +22,8 @@ func (kv *ShardKV) persist(index int) {
 }
 
 func (kv *ShardKV) readFromSnapshot(data []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	if data == nil || len(data) < 1 {
 		return
 	}
@@ -44,11 +46,18 @@ func (kv *ShardKV) readFromSnapshot(data []byte) {
 	if err := d.Decode(&cfg); err != nil {
 		panic(err)
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+
 	kv.storage = storage
 	kv.duplicatedTable = duplicatedTable
 	kv.shards = shards
 	kv.config.Store(cfg)
-	Debug(dSnap, "Server read snapshot success")
+	//for current3B
+	//if server restart and read snapshot, the previous log will be persisted in log entries.
+	//because there is no new request arrived, the leader can't commit the log whose term is not equal to leader's term.
+	//it leads to server will be pending in the loop of waiting for shard data, but the shard data command is in the log entries.
+	//so we need to append the empty log to make leader can commit the log whose term is equal to leader's term.
+	kv.rf.Start(Op{
+		OpType: "Nothing",
+	})
+	Debug(dSnap, "[%d] [%d] Server %d read snapshot success", kv.gid, cfg.Num, kv.me)
 }

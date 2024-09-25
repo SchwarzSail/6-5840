@@ -17,8 +17,6 @@ type Op struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	OpType          string
-	ResultMsg       chan string
-	ErrMsg          chan Err
 	From            int
 	Key             string
 	Value           string
@@ -60,7 +58,7 @@ type ShardKV struct {
 	cond *sync.Cond
 }
 
-func (kv *ShardKV) preProcessRequest(key string, clientID int64, sequentID int, err *Err, value *string) bool {
+func (kv *ShardKV) preProcessRequest(clientID int64, sequentID int, err *Err, value *string) bool {
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
 		*err = ErrWrongLeader
@@ -96,7 +94,7 @@ func (kv *ShardKV) saveRequestInstance(index int, info *RequestInfo) {
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	if ok := kv.preProcessRequest(args.Key, args.ClientID, args.SequentID, &reply.Err, &reply.Value); !ok {
+	if ok := kv.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, &reply.Value); !ok {
 		return
 	}
 	//建立对应的channel
@@ -109,8 +107,6 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		ShardID:   key2shard(args.Key),
 		OpType:    "Get",
 		From:      kv.me,
-		ResultMsg: ch,
-		ErrMsg:    errCh,
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
 	})
@@ -123,16 +119,20 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	info := RequestInfo{
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
+		ErrMsg:    errCh,
+		Result:    ch,
 	}
 	kv.saveRequestInstance(index, &info)
 	//等待apply()
+	defer kv.freeMemory(index)
+
 	select {
 	case value := <-ch:
 		reply.Err = OK
 		reply.Value = value
-		kv.mu.Lock()
-		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, value)
-		kv.mu.Unlock()
+		//kv.mu.Lock()
+		//Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, value)
+		//kv.mu.Unlock()
 	case err := <-errCh:
 		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
 		reply.Err = err
@@ -145,7 +145,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	if ok := kv.preProcessRequest(args.Key, args.ClientID, args.SequentID, &reply.Err, nil); !ok {
+	if ok := kv.preProcessRequest(args.ClientID, args.SequentID, &reply.Err, nil); !ok {
 		return
 	}
 	//建立对应的channel
@@ -159,8 +159,6 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		Value:     args.Value,
 		OpType:    args.Op,
 		From:      kv.me,
-		ResultMsg: ch,
-		ErrMsg:    errCh,
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
 	})
@@ -173,16 +171,19 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	info := RequestInfo{
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
+		ErrMsg:    errCh,
+		Result:    ch,
 	}
 	kv.saveRequestInstance(index, &info)
 	//等待apply()
+	defer kv.freeMemory(index)
 	select {
-	case res := <-ch:
+	case <-ch:
 		reply.Err = OK
 		//for debug
-		kv.mu.Lock()
-		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, res)
-		kv.mu.Unlock()
+		//kv.mu.Lock()
+		//Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, res)
+		//kv.mu.Unlock()
 	case err := <-errCh:
 		reply.Err = err
 		Debug(dWarn, "PutAppend: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
@@ -262,13 +263,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.shards = make([]State, shardctrler.NShards)
 	kv.clientID = nrand()
 	cfg := kv.mck.Query(0)
-	
 	kv.config.Store(&cfg)
 	kv.readFromSnapshot(kv.persister.ReadSnapshot())
 	go kv.processApply()
 	go kv.processMonitor()
 	go kv.migratingDaemon()
-	//go kv.checkLastTermDeamon()
 	return kv
 }
 
@@ -277,8 +276,9 @@ func (kv *ShardKV) processApply() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
 		//check that the term isn't changed
+		//in my views, term meas the status of consensus, if term changed, the consensus is invalid
 		if msg.TermUpdated {
-			kv.freeMemory()
+			kv.freeAllRequests()
 			continue
 		}
 		if msg.SnapshotValid {
@@ -293,49 +293,44 @@ func (kv *ShardKV) processApply() {
 		}
 		if msg.CommandValid {
 			op := msg.Command.(Op)
-			kv.judgeInstance(op, msg.CommandIndex)
 			if msg.CommandIndex <= kv.lastApplied {
 				Debug(dWarn, "the apply is duplicated or expired")
 				continue
 			}
-			var res string
+
+			kv.judgeInstance(op, msg.CommandIndex)
+			errCh, result := kv.getChannels(msg.CommandIndex)
 			switch op.OpType {
 			case "Nothing":
 			case "UpdateConfig":
 				kv.handleUpdateConfig(op)
 			case "UpdateMigrateState":
-				kv.handleUpdateMigrateState(op)
-				if op.From == kv.me && op.ResultMsg != nil {
-					op.ResultMsg <- ""
+				kv.handleUpdateMigrateState(op, errCh)
+				if op.From == kv.me && result != nil {
+					result <- ""
 				}
 			case "Receive":
-				kv.handleReceive(op)
-				if op.From == kv.me && op.ResultMsg != nil {
-					op.ResultMsg <- ""
+				kv.handleReceive(op, errCh)
+				if op.From == kv.me && result != nil {
+					result <- ""
 				}
 			default:
 				//before we execute the command, we need to check the key is whether the server is responsible for
 				isReady := kv.shards[op.ShardID] == Ready
 				if kv.config.Load().Shards[op.ShardID] != kv.gid {
-					if op.From == kv.me && op.ErrMsg != nil {
-						op.ErrMsg <- ErrWrongGroup
+					if op.From == kv.me && errCh != nil {
+						errCh <- ErrWrongGroup
 					}
 				} else if !isReady {
-					if op.From == kv.me && op.ErrMsg != nil {
-						op.ErrMsg <- ErrShardNotReady
+					if op.From == kv.me && errCh != nil {
+						errCh <- ErrShardNotReady
 					}
 				} else {
 					//execute command
-					res = kv.executeCommand(op)
-					kv.mu.Lock()
-					kv.duplicatedTable[op.ClientID] = LastReply{
-						SequentID: op.SequentID,
-						Value:     res,
-					}
-					kv.mu.Unlock()
-					if op.From == kv.me && op.ResultMsg != nil {
-						Debug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Load().Num, kv.me)
-						op.ResultMsg <- res
+					res := kv.executeCommand(op)
+					if op.From == kv.me && result != nil {
+						//xDebug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Load().Num, kv.me)
+						result <- res
 					}
 				}
 			}
@@ -346,16 +341,22 @@ func (kv *ShardKV) processApply() {
 				kv.persist(kv.lastApplied)
 			}
 		}
-		
+
 	}
 }
 
-func (kv *ShardKV) freeMemory() {
+func (kv *ShardKV) freeAllRequests() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for key, _ := range kv.requestTable {
 		delete(kv.requestTable, key)
 	}
+}
+
+func (kv *ShardKV) freeMemory(index int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	delete(kv.requestTable, index)
 }
 
 func (kv *ShardKV) judgeInstance(op Op, index int) {
@@ -365,9 +366,21 @@ func (kv *ShardKV) judgeInstance(op Op, index int) {
 	//if the request is invalid, we need to notify the corresponding client
 	if ok && (info.ClientID != op.ClientID || info.SequentID != op.SequentID) {
 		Debug(dTrace, "Server %d find that the request is invalid", kv.me)
-		op.ErrMsg <- ErrWrongRequest
+		if info.ErrMsg != nil {
+			info.ErrMsg <- ErrWrongRequest
+		}
 	}
-	delete(kv.requestTable, index)
+	return
+}
+
+func (kv *ShardKV) getChannels(index int) (errCh chan Err, result chan string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	info, ok := kv.requestTable[index]
+	if !ok {
+		return nil, nil
+	}
+	return info.ErrMsg, info.Result
 }
 
 func (kv *ShardKV) executeCommand(op Op) (res string) {
@@ -391,24 +404,10 @@ func (kv *ShardKV) executeCommand(op Op) (res string) {
 		kv.storage[shard][op.Key] = val + op.Value
 		res = kv.storage[shard][op.Key]
 	}
-	Debug(dTrace, "[%d] [%d] Server %d apply the cmd whose clientID is %d, and sequentID is %d",kv.gid, kv.config.Load().Num, kv.me, op.ClientID, op.SequentID)
-	return
-}
-
-
-func(kv *ShardKV) checkLastTermDeamon() {
-	for kv.killed() {
-		currentTerm, isLeader := kv.rf.GetState() 
-		if !isLeader {
-			time.Sleep(100 *time.Millisecond)
-			continue
-		}
-		lastLogTerm := kv.rf.GetLastLogTerm()
-		if lastLogTerm != currentTerm {
-			kv.rf.Start(Op{
-				OpType: "Nothing",
-			})
-		}
-		time.Sleep(100 *time.Millisecond)
+	kv.duplicatedTable[op.ClientID] = LastReply{
+		SequentID: op.SequentID,
+		Value:     res,
 	}
+	//Debug(dTrace, "[%d] [%d] Server %d apply the cmd whose clientID is %d, and sequentID is %d", kv.gid, kv.config.Load().Num, kv.me, op.ClientID, op.SequentID)
+	return
 }

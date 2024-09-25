@@ -13,12 +13,10 @@ func (rf *Raft) resetHeartBeatTimer() {
 	rf.lastHeartBestsTime = time.Now()
 }
 
-func (rf *Raft) sendHeartBeats() {
+func (rf *Raft) sendHeartBeats(term int) {
 	for !rf.killed() {
-		rf.mu.Lock()
-		state := rf.state
-		rf.mu.Unlock()
-		if state != Leader {
+		currentTerm, isLeader := rf.GetState()
+		if currentTerm != term || !isLeader {
 			return
 		}
 		rf.mu.Lock()
@@ -60,10 +58,10 @@ func (rf *Raft) sendHeartBeats() {
 					}
 					Debug(dTrace, "Leader %d send the append entries to server %d, and whose nextIndex[%d] is %d", rf.me, i, i, rf.nextIndex[i])
 					if rf.nextIndex[i] == rf.logLength() {
-					args.Entries = make([]LogEntry, 0)
-				} else {
-					args.Entries = append(make([]LogEntry, 0), rf.log[rf.logIndex(rf.nextIndex[i]):]...)
-				}
+						args.Entries = make([]LogEntry, 0)
+					} else {
+						args.Entries = append(make([]LogEntry, 0), rf.log[rf.logIndex(rf.nextIndex[i]):]...)
+					}
 					go rf.handleAppendEntries(i, args)
 				}
 			}
@@ -123,22 +121,3 @@ func (rf *Raft) quicklySync() {
 	}
 	rf.mu.Unlock()
 }
-
-// func (rf *Raft) quickSyncSnapshot() {
-// 	rf.mu.Lock()
-// 	for i := range rf.peers {
-// 		if i != rf.me {
-// 			snapshotData := make([]byte, len(rf.snapshot))
-// 			copy(snapshotData, rf.snapshot)
-// 			args := InstallSnapshotArgs{
-// 				Term:              rf.currentTerm,
-// 				LeaderId:          rf.me,
-// 				LastIncludedIndex: rf.lastIncludedIndex,
-// 				LastIncludedTerm:  rf.log[0].Term,
-// 				Data:              snapshotData,
-// 			}
-// 			go rf.handleInstallSnapshot(i, args)
-// 		}
-// 	}
-// 	rf.mu.Unlock()
-// }

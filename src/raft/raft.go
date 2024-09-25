@@ -146,7 +146,7 @@ func (rf *Raft) stateChanged(state State) {
 			rf.nextIndex[peer] = rf.lastLogIndex() + 1
 			rf.matchIndex[peer] = 0
 		}
-		go rf.sendHeartBeats()
+		go rf.sendHeartBeats(rf.currentTerm)
 	case Candidate:
 		DPrintf("Server %d becomes candidate", rf.me)
 		rf.currentTerm++
