@@ -130,9 +130,9 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	case value := <-ch:
 		reply.Err = OK
 		reply.Value = value
-		//kv.mu.Lock()
-		//Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, value)
-		//kv.mu.Unlock()
+		////kv.mu.Lock()
+		////Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of Get [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, value)
+		////kv.mu.Unlock()
 	case err := <-errCh:
 		Debug(dWarn, "Get: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
 		reply.Err = err
@@ -178,12 +178,12 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	//等待apply()
 	defer kv.freeMemory(index)
 	select {
-	case <-ch:
+	case res := <-ch:
 		reply.Err = OK
 		//for debug
-		//kv.mu.Lock()
-		//Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, res)
-		//kv.mu.Unlock()
+		kv.mu.Lock()
+		Debug(dTrace, "[%d] [%d] Leader %d success to get the reply of PutAppend [%d], key %v, res %v", kv.gid, kv.config.Load().Num, kv.me, key2shard(args.Key), args.Key, res)
+		kv.mu.Unlock()
 	case err := <-errCh:
 		reply.Err = err
 		Debug(dWarn, "PutAppend: [%d] [%d] server %d, The Err is %v", kv.gid, kv.config.Load().Num, kv.me, err)
@@ -329,7 +329,7 @@ func (kv *ShardKV) processApply() {
 					//execute command
 					res := kv.executeCommand(op)
 					if op.From == kv.me && result != nil {
-						//xDebug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Load().Num, kv.me)
+						Debug(dTrace, "[%d] [%d] Server %d call the RPC to continue", kv.gid, kv.config.Load().Num, kv.me)
 						result <- res
 					}
 				}

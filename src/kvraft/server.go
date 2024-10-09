@@ -14,19 +14,19 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Key           string
-	Value         string
-	Op            string
-	From          int
-	ResultChannel chan string
-	ClientID      int64
-	SequentID     int
+	Key       string
+	Value     string
+	Op        string
+	From      int
+	ClientID  int64
+	SequentID int
 }
 
 type RequestInfo struct {
 	ClientID  int64
 	SequentID int
-	Result    chan Err
+	ErrMsg    chan Err
+	Result    chan string
 }
 
 type KVServer struct {
@@ -64,7 +64,7 @@ func (kv *KVServer) preProcessRequest(clientID int64, sequentID int, err *Err, v
 			if value != nil {
 				*value = kv.duplicatedTable[clientID]
 			}
-			Debug(dInfo, "Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID,sequentID)
+			Debug(dInfo, "Find that the request whose ClientID is %d, and SequentID is %d is duplicated", clientID, sequentID)
 			return false
 		} else if preSequentID > sequentID {
 			*err = ErrExpireReq
@@ -93,12 +93,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	//封装日志发送给raft
 	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(Op{
-		Key:           args.Key,
-		Op:            "Get",
-		From:          kv.me,
-		ResultChannel: ch,
-		ClientID:      args.ClientID,
-		SequentID:     args.SequentID,
+		Key:       args.Key,
+		Op:        "Get",
+		From:      kv.me,
+		ClientID:  args.ClientID,
+		SequentID: args.SequentID,
 	})
 	kv.mu.Unlock()
 	if !isLeader {
@@ -109,7 +108,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	info := RequestInfo{
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
-		Result:    errCh,
+		Result:    ch,
+		ErrMsg:    errCh,
 	}
 	kv.saveRequestInstance(index, &info)
 	//等待apply()
@@ -119,10 +119,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Value = value
 		Debug(dInfo, "service get the success reply of Get")
 	case err := <-errCh:
-		Debug(dWarn, "---------------Leader changed------------------------")
 		reply.Err = err
 	case <-time.After(RPCTimeout):
-		Debug(dWarn,"Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d",kv.me, args.ClientID, args.SequentID)
+		Debug(dWarn, "Server %d find that the Get RPC is timeout, and ClientID is %d, SequentID is %d", kv.me, args.ClientID, args.SequentID)
 		reply.Err = ErrRPCTimeout
 	}
 }
@@ -136,13 +135,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	//封装日志发送给raft
 	kv.mu.Lock()
 	index, _, isLeader := kv.rf.Start(Op{
-		Key:           args.Key,
-		Value:         args.Value,
-		Op:            args.Op,
-		From:          kv.me,
-		ResultChannel: ch,
-		ClientID:      args.ClientID,
-		SequentID:     args.SequentID,
+		Key:       args.Key,
+		Value:     args.Value,
+		Op:        args.Op,
+		From:      kv.me,
+		ClientID:  args.ClientID,
+		SequentID: args.SequentID,
 	})
 	kv.mu.Unlock()
 	if !isLeader {
@@ -154,7 +152,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	info := RequestInfo{
 		ClientID:  args.ClientID,
 		SequentID: args.SequentID,
-		Result:    errCh,
+		Result:    ch,
+		ErrMsg:    errCh,
 	}
 	kv.saveRequestInstance(index, &info)
 	//等待apply()
@@ -164,9 +163,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		Debug(dInfo, "service get the success reply of PutAppend")
 	case err := <-errCh:
 		reply.Err = err
-		Debug(dWarn, "---------------Leader changed------------------------")
 	case <-time.After(RPCTimeout):
-		Debug(dWarn,"Server %d find that the PutAppend RPC is timeout, and ClientID is %d, SequentID is %d",kv.me, args.ClientID, args.SequentID)
+		Debug(dWarn, "Server %d find that the PutAppend RPC is timeout, and ClientID is %d, SequentID is %d", kv.me, args.ClientID, args.SequentID)
 		reply.Err = ErrRPCTimeout
 	}
 
@@ -256,19 +254,18 @@ func (kv *KVServer) processApply() {
 			kv.mu.Unlock()
 		} else if msg.CommandValid {
 			//判断错误请求
-			//Debug(dTrace, "Server %d start to apply the cmd whose index is %d",kv.me, msg.CommandIndex)
-			op := msg.Command.(Op)
-			kv.judgeInstance(op, msg.CommandIndex)
 			if msg.CommandIndex <= kv.lastApplied {
 				Debug(dWarn, "the apply is duplicated or expired")
 				continue
 			}
-			//执行command
+			op := msg.Command.(Op)
+			result := kv.getChannels(msg.CommandIndex)
+
 			res := kv.executeCommand(op, msg.CommandIndex)
-			
-			if op.From == kv.me && op.ResultChannel != nil {
-				Debug(dTrace, "Server %d call the RPC to continue",kv.me)
-				op.ResultChannel <- res
+
+			if op.From == kv.me && result != nil {
+				Debug(dTrace, "Server %d call the RPC to continue", kv.me)
+				result <- res
 			}
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				kv.persist(msg.CommandIndex)
@@ -281,21 +278,30 @@ func (kv *KVServer) freeMemory() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for key, val := range kv.requestTable {
-		val.Result <- ErrWrongLeader //通过channel告知RPC结束进程
+		val.ErrMsg <- ErrWrongLeader //通过channel告知RPC结束进程
 		delete(kv.requestTable, key)
 	}
 }
 
-func (kv *KVServer) judgeInstance(op Op, index int) {
+func (kv *KVServer) getChannels(index int) (result chan string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	info, ok := kv.requestTable[index]
+	if !ok {
+		return nil
+	}
+	return info.Result
+}
 
+func (kv *KVServer) judgeInstance(op Op, index int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	info, ok := kv.requestTable[index]
 	//保证请求实例和apply接收到的应该是一样的
 	if ok && (info.ClientID != op.ClientID || info.SequentID != op.SequentID) {
 		//通知rpc进程
-		Debug(dTrace, "Server %d find that the request is invalid",kv.me)
-		info.Result <- ErrWrongRequest
+		Debug(dTrace, "Server %d find that the request is invalid", kv.me)
+		info.ErrMsg <- ErrWrongRequest
 	}
 	delete(kv.requestTable, index)
 }
